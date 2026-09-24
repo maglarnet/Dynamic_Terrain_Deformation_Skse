@@ -84,6 +84,23 @@ namespace Clipmap
 
 		float motionX{ 0.0f };
 		float motionY{ 0.0f };
+
+		// How much of this stamp's own radius its rim may wander by, as a
+		// fraction, for a round stamp.  Zero - the default - leaves the
+		// outline a circle, which is what every mark wants except a crater.
+		// A blast sets it so the hole it leaves is torn rather than turned;
+		// see RadialBulge in ClipmapUpdateCS.h for why the shape needs a
+		// term of its own at all.
+		float rimBulge{ 0.0f };
+
+		// Loose snow thrown up at this stamp's lip, as a multiple of what a
+		// footprint's own rim noise raises, and - in lipBand - how wide that
+		// band is as a fraction of the stamp's radius.  Zero, the default,
+		// leaves the lip smooth; only a blast sets it, because a crater is
+		// the one shape whose edge has no lumps of its own to begin with.
+		float rimNoise{ 0.0f };
+		float lipBand{ 0.0f };
+
 		bool snow{ false };
 	};
 

@@ -400,8 +400,28 @@ namespace Settings
 			return true;
 		}
 
-		bool ApplyMagicSetting(const std::string& key, const std::string& value)
-		{
+	bool ApplyMagicSetting(const std::string& key, const std::string& value)
+	{
+		// Handled before the chain below rather than inside it.  That chain is
+		// already at the compiler's limit for nested blocks (MSVC C1061), and
+		// one more `else if` on the end of it stops the file building at all.
+		// Anything added here has to leave the chain's length unchanged.
+		if (key == "ObjectStampMaxDepthPerThickness") {
+			objectStampMaxDepthPerThickness =
+				Clamped(key, AsFloat(key, value, 2.0f), 0.0f, 64.0f);
+			return true;
+		}
+
+		// The same reasoning as above: these leave the chain's length alone.
+		if (key == "ObjectLiftToSnow") {
+			objectLiftToSnow = AsBool(value);
+			return true;
+		}
+		if (key == "ObjectLiftSlack") {
+			objectLiftSlack = Clamped(key, AsFloat(key, value, 0.5f), 0.0f, 64.0f);
+			return true;
+		}
+
 		if (key == "EnableMagicImpacts") {
 			enableMagicImpacts = AsBool(value);
 		} else if (key == "EnableShoutImpacts") {
@@ -428,6 +448,14 @@ namespace Settings
 			explosionImpactMaxRadius = Clamped(key, AsFloat(key, value, 256.0f), 0.00f, 4096.00f);
 		} else if (key == "ExplosionImpactDepth") {
 			explosionImpactDepth = Clamped(key, AsFloat(key, value, 18.0f), 0.00f, 256.00f);
+		} else if (key == "ExplosionImpactShoulder") {
+			explosionImpactShoulder = Clamped(key, AsFloat(key, value, 0.65f), 0.00f, 0.90f);
+		} else if (key == "ExplosionImpactRimBulge") {
+			explosionImpactRimBulge = Clamped(key, AsFloat(key, value, 0.25f), 0.00f, 0.50f);
+		} else if (key == "ExplosionImpactRimNoise") {
+			explosionImpactRimNoise = Clamped(key, AsFloat(key, value, 1.2f), 0.00f, 8.00f);
+		} else if (key == "ExplosionImpactRimNoiseBand") {
+			explosionImpactRimNoiseBand = Clamped(key, AsFloat(key, value, 0.14f), 0.00f, 0.50f);
 		} else if (key == "MagicImpactRimScale") {
 			magicImpactRimScale = Clamped(key, AsFloat(key, value, 0.1f), 0.00f, 8.00f);
 		} else if (key == "MagicImpactSnowMelt") {
@@ -504,6 +532,64 @@ namespace Settings
 			enableStampShapes = AsBool(value);
 		} else if (key == "StampFootShape") {
 			stampFootShape = AsBool(value);
+		} else if (key == "StampShaftShape") {
+			stampShaftShape = AsBool(value);
+		} else if (key == "ShaftStampMinRadius") {
+			shaftStampMinRadius = Clamped(key, AsFloat(key, value, 0.75f), 0.0f, 64.0f);
+		} else if (key == "ShaftStampMaxRadius") {
+			shaftStampMaxRadius = Clamped(key, AsFloat(key, value, 4.0f), 0.0f, 64.0f);
+		} else if (key == "ShaftStampFootRadius") {
+			shaftStampFootRadius = Clamped(key, AsFloat(key, value, 18.69f), 0.1f, 256.0f);
+		} else if (key == "ShaftStampMinDepth") {
+			shaftStampMinDepth = Clamped(key, AsFloat(key, value, 1.0f), 0.0f, 1.0f);
+		} else if (key == "ShaftStampRim") {
+			stampShaftRim = Clamped(key, AsFloat(key, value, 1.0f), 0.0f, 8.0f);
+		} else if (key == "ShaftStampLine") {
+			stampShaftLine = AsBool(value);
+		} else if (key == "ShaftLineLengthScale") {
+			shaftLineLengthScale = Clamped(key, AsFloat(key, value, 0.85f), 0.0f, 1.0f);
+		} else if (key == "ShaftLineHalfWidth") {
+			// This used to be the drawn width outright.  It is now the floor of
+			// a width taken from the object's own measured thickness, so it is
+			// forwarded rather than left dangling: a user who changes it
+			// expecting the line to move must not be met with silence.  It is
+			// the same value ShaftLineMinWidth sets, and the later of the two
+			// in the file wins, which is how the rest of the INI behaves.
+			shaftLineHalfWidth = Clamped(key, AsFloat(key, value, 1.1f), 0.05f, 32.0f);
+			shaftLineMinWidth = shaftLineHalfWidth;
+		} else if (key == "ShaftLineMaxLength") {
+			shaftLineMaxLength = Clamped(key, AsFloat(key, value, 40.0f), 1.0f, 256.0f);
+		} else if (key == "ShaftSpanLengthScale") {
+			shaftSpanLengthScale = Clamped(key, AsFloat(key, value, 2.2f), 1.0f, 8.0f);
+		} else if (key == "ShaftLineMinLength") {
+			shaftLineMinLength = Clamped(key, AsFloat(key, value, 1.6f), 0.0f, 64.0f);
+		} else if (key == "ShaftGroundClearance") {
+			shaftGroundClearance = Clamped(key, AsFloat(key, value, 2.0f), 0.0f, 256.0f);
+		} else if (key == "ShaftStampAtContact") {
+			shaftStampAtContact = AsBool(value);
+		} else if (key == "ShaftContactLineLength") {
+			shaftContactLineLength = Clamped(key, AsFloat(key, value, 12.0f), 0.0f, 256.0f);
+		} else if (key == "ShaftLineWidthScale") {
+			shaftLineWidthScale = Clamped(key, AsFloat(key, value, 1.0f), 0.0f, 8.0f);
+		} else if (key == "ShaftLineMinWidth") {
+			shaftLineMinWidth = Clamped(key, AsFloat(key, value, 1.1f), 0.0f, 64.0f);
+		} else if (key == "ShaftLineMaxWidth") {
+			shaftLineMaxWidth = Clamped(key, AsFloat(key, value, 6.0f), 0.0f, 64.0f);
+		} else if (key == "ShaftFollowPose") {
+			shaftFollowPose = AsBool(value);
+		} else if (key == "ShaftGateAtContact") {
+			shaftGateAtContact = AsBool(value);
+		} else if (key == "ShaftSpanFromContact") {
+			shaftSpanFromContact = AsBool(value);
+		} else if (key == "ShaftSpanMaxGap") {
+			shaftSpanMaxGap = Clamped(key, AsFloat(key, value, 2.0f), 0.0f, 256.0f);
+		} else if (key == "ShaftSpanSteps") {
+			shaftSpanSteps = static_cast<int>(
+				Clamped(key, AsFloat(key, value, 16), 2.0f, 256.0f));
+		} else if (key == "ShaftLowOffset") {
+			shaftLowOffset = AsBool(value);
+		} else if (key == "StampFromMesh") {
+			stampFromMesh = AsBool(value);
 		} else if (key == "EnableBloodDecals") {
 			enableBloodDecals = AsBool(value);
 		} else if (key == "BloodDecalsIgnoreShaderIdentity") {
@@ -538,6 +624,16 @@ namespace Settings
 			stampFootAspect = Clamped(key, AsFloat(key, value, 0.50f), 0.1f, 8.0f);
 		} else if (key == "StampFootSeparation") {
 			stampFootSeparation = Clamped(key, AsFloat(key, value, 0.0f), 0.0f, 512.0f);
+		} else if (key == "ShaftMarkAlignToFoot") {
+			shaftMarkAlignToFoot = AsBool(value);
+		} else if (key == "ShaftMarkFootAspect") {
+			shaftMarkFootAspect = Clamped(key, AsFloat(key, value, 0.50f), 0.05f, 8.0f);
+		} else if (key == "ShaftMarkMaxAspect") {
+			shaftMarkMaxAspect = Clamped(key, AsFloat(key, value, 4.0f), 1.0f, 64.0f);
+		} else if (key == "ShaftMarkRimJitter") {
+			shaftMarkRimJitter = Clamped(key, AsFloat(key, value, 0.35f), 0.0f, 4.0f);
+		} else if (key == "ShaftMarkRimJitterBand") {
+			shaftMarkRimJitterBand = Clamped(key, AsFloat(key, value, 6.0f), 0.25f, 256.0f);
 		} else if (key == "StampShapeKeyword") {
 			stampShapeKeyword = Trim(value);
 		} else if (key == "StampRimHeight") {
@@ -552,14 +648,34 @@ namespace Settings
 			objectStampRadiusScale = Clamped(key, AsFloat(key, value, 1.0f), 0.0f, 16.0f);
 		} else if (key == "ObjectStampDepthScale") {
 			objectStampDepthScale = Clamped(key, AsFloat(key, value, 1.0f), 0.0f, 16.0f);
+		} else if (key == "ObjectStampFromMesh") {
+			objectStampFromMesh = AsBool(value);
+		} else if (key == "ObjectStampMinRadius") {
+			objectStampMinRadius = Clamped(key, AsFloat(key, value, 1.5f), 0.0f, 512.0f);
+		} else if (key == "ObjectStampMaxRadius") {
+			objectStampMaxRadius = Clamped(key, AsFloat(key, value, 48.0f), 0.0f, 4096.0f);
 		} else if (key == "ObjectFullSizeRadius") {
 			objectFullSizeRadius = Clamped(key, AsFloat(key, value, 1.0f), 1.0f, 4096.0f);
 		} else if (key == "ObjectContactTolerance") {
 			objectContactTolerance = Clamped(key, AsFloat(key, value, 48.0f), 0.0f, 1024.0f);
 		} else if (key == "ObjectSinkLimit") {
 			objectSinkLimit = Clamped(key, AsFloat(key, value, 40.0f), 0.0f, 4096.0f);
+		} else if (key == "ObjectSinkFollowsSnow") {
+			objectSinkFollowsSnow = AsBool(value);
+		} else if (key == "ObjectSinkSlack") {
+			objectSinkSlack = Clamped(key, AsFloat(key, value, 16.0f), 0.0f, 1024.0f);
 		} else if (key == "ObjectStampInterval") {
 			objectStampInterval = Clamped(key, AsFloat(key, value, 0.20f), 0.0f, 60.0f);
+		} else if (key == "ArrowStampRadius") {
+			arrowStampRadius = Clamped(key, AsFloat(key, value, 4.0f), 0.0f, 256.0f);
+		} else if (key == "ArrowStampDepthScale") {
+			arrowStampDepthScale = Clamped(key, AsFloat(key, value, 0.6f), 0.0f, 16.0f);
+		} else if (key == "ContactProbeShafts") {
+			contactProbeShafts = AsBool(value);
+		} else if (key == "ContactProbeMaxMiss") {
+			contactProbeMaxMiss = Clamped(key, AsFloat(key, value, 96.0f), 0.0f, 4096.0f);
+		} else if (key == "LogContactSamples") {
+			logContactSamples = AsBool(value);
 		} else if (key == "LogObjectStamps") {
 			logObjectStamps = AsBool(value);
 		} else if (key == "EnableHeatSources") {
@@ -602,7 +718,20 @@ namespace Settings
 			debugActorTint = std::clamp(AsFloat(key, value, 0.0f), 0.0f, 1.0f);
 		} else if (key == "DebugActorTintColour" || key == "DebugActorTintColor") {
 			ParseTriple(key, value, debugActorTintColour);
-		} else if (key == "PaintPickupRate") {
+		} else {
+			return false;
+		}
+		return true;
+	}
+
+	// The paint and surface-response keys live in their own function because one
+	// `else if` chain has a hard ceiling in MSVC: past roughly 128 links the
+	// compiler stops with C1061 "blocks nested too deeply", and the chain in
+	// ApplySurfaceSetting sits right against that ceiling.  Every branch added
+	// to it has to go somewhere else, so paint goes here.
+	bool ApplyPaintSetting(const std::string& key, const std::string& value)
+	{
+		if (key == "PaintPickupRate") {
 			paintPickupRate = Clamped(key, AsFloat(key, value, 0.80f), 0.0f, 32.0f);
 		} else if (key == "PaintBlendRate") {
 			paintBlendRate = Clamped(key, AsFloat(key, value, 0.35f), 0.0f, 1.0f);
@@ -616,13 +745,11 @@ namespace Settings
 			paintKeepRunning = ParseKeep(key, value, 0.90f);
 		} else if (key == "PaintReach") {
 			paintReach = std::max(AsFloat(key, value, 20.0f), 0.0f);
-
-			if (paintReach > 0.0f && paintReach < 4.0f) {
-				logger::warn(
-					"PaintReach is {} WORLD UNITS, not a fraction - that reaches barely "
-					"above the soles. Shin height on a human is about 34.",
-					paintReach);
-			}
+			// PaintReach is in WORLD UNITS, not a fraction. A value under 4 barely
+			// clears the soles, where shin height on a human is about 34.
+			logger::warn("PaintReach={} is {} - if that was meant as a fraction, "
+						 "PaintReachFraction is the key you want",
+				paintReach, paintReach < 4.0f ? "under shin height" : "world units");
 		} else if (key == "PaintReachFraction") {
 			paintReachFraction = std::clamp(AsFloat(key, value, 0.22f), 0.0f, 4.0f);
 		} else if (key == "PaintReachPlateau") {
@@ -640,21 +767,21 @@ namespace Settings
 		} else if (key == "LogActorPaint") {
 			logActorPaint = AsBool(value);
 		} else if (key == "PaintSnow") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kSnow));
+			ParsePaint(key, value, surfacePaint[static_cast<size_t>(Surfaces::Type::kSnow)]);
 		} else if (key == "PaintDirt") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kDirt));
+			ParsePaint(key, value, surfacePaint[static_cast<size_t>(Surfaces::Type::kDirt)]);
 		} else if (key == "PaintMud") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kMud));
+			ParsePaint(key, value, surfacePaint[static_cast<size_t>(Surfaces::Type::kMud)]);
 		} else if (key == "PaintSand") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kSand));
+			ParsePaint(key, value, surfacePaint[static_cast<size_t>(Surfaces::Type::kSand)]);
 		} else if (key == "PaintAsh") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kAsh));
+			ParsePaint(key, value, surfacePaint[static_cast<size_t>(Surfaces::Type::kAsh)]);
 		} else if (key == "PaintGrass") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kGrass));
+			ParsePaint(key, value, surfacePaint[static_cast<size_t>(Surfaces::Type::kGrass)]);
 		} else if (key == "PaintGravel") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kGravel));
+			ParsePaint(key, value, surfacePaint[static_cast<size_t>(Surfaces::Type::kGravel)]);
 		} else if (key == "PaintStone") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kStone));
+			ParsePaint(key, value, surfacePaint[static_cast<size_t>(Surfaces::Type::kStone)]);
 		} else if (key == "LogStampShape") {
 			logStampShape = AsBool(value);
 		} else if (key == "EnableLogging") {
@@ -666,28 +793,37 @@ namespace Settings
 		} else if (key == "RouteOnlyPlayerCamera") {
 			routeOnlyPlayerCamera = AsBool(value);
 		} else if (key == "ResponseUnknown") {
-			ParseResponse(key, value, Response(Surfaces::Type::kUnknown));
+			ParseResponse(key, value,
+				surfaceResponse[static_cast<size_t>(Surfaces::Type::kUnknown)]);
 		} else if (key == "ResponseSnow") {
-			ParseResponse(key, value, Response(Surfaces::Type::kSnow));
+			ParseResponse(key, value,
+				surfaceResponse[static_cast<size_t>(Surfaces::Type::kSnow)]);
 		} else if (key == "ResponseGrass") {
-			ParseResponse(key, value, Response(Surfaces::Type::kGrass));
+			ParseResponse(key, value,
+				surfaceResponse[static_cast<size_t>(Surfaces::Type::kGrass)]);
 		} else if (key == "ResponseDirt") {
-			ParseResponse(key, value, Response(Surfaces::Type::kDirt));
+			ParseResponse(key, value,
+				surfaceResponse[static_cast<size_t>(Surfaces::Type::kDirt)]);
 		} else if (key == "ResponseMud") {
-			ParseResponse(key, value, Response(Surfaces::Type::kMud));
+			ParseResponse(key, value,
+				surfaceResponse[static_cast<size_t>(Surfaces::Type::kMud)]);
 		} else if (key == "ResponseSand") {
-			ParseResponse(key, value, Response(Surfaces::Type::kSand));
+			ParseResponse(key, value,
+				surfaceResponse[static_cast<size_t>(Surfaces::Type::kSand)]);
 		} else if (key == "ResponseAsh") {
-			ParseResponse(key, value, Response(Surfaces::Type::kAsh));
+			ParseResponse(key, value,
+				surfaceResponse[static_cast<size_t>(Surfaces::Type::kAsh)]);
 		} else if (key == "ResponseGravel") {
-			ParseResponse(key, value, Response(Surfaces::Type::kGravel));
+			ParseResponse(key, value,
+				surfaceResponse[static_cast<size_t>(Surfaces::Type::kGravel)]);
 		} else if (key == "ResponseStone") {
-			ParseResponse(key, value, Response(Surfaces::Type::kStone));
-			} else {
-				return false;
-			}
-			return true;
+			ParseResponse(key, value,
+				surfaceResponse[static_cast<size_t>(Surfaces::Type::kStone)]);
+		} else {
+			return false;
 		}
+		return true;
+	}
 
 		bool ApplyDiagnosticSetting(const std::string& key, const std::string& value)
 		{
@@ -719,14 +855,24 @@ namespace Settings
 
 	void ApplyLogLevel()
 	{
+		// Never to "off".  A log that can be switched off entirely is a log
+		// that cannot explain a bug once it happens, and the whole reason this
+		// mod grew a log was to explain a mark in the wrong place.  Turning
+		// EnableLogging down now raises the bar to warnings instead of
+		// closing the door: the per-draw spam goes, anything wrong remains.
 		if (auto logger = spdlog::default_logger(); logger) {
-			logger->set_level(enableLogging ? spdlog::level::info : spdlog::level::off);
+			logger->set_level(enableLogging ? spdlog::level::info : spdlog::level::warn);
 		}
 	}
 
 	void Load()
 	{
+		logger::info("Settings::Load entered, opening {}", kPath);
+
 		std::ifstream file(kPath);
+
+		logger::info("Settings::Load opened={}", static_cast<bool>(file));
+
 		if (!file) {
 
 			ApplyLogLevel();
@@ -738,7 +884,9 @@ namespace Settings
 			snowStampRimLean = snowStampChurn = -1.0f;
 
 		std::string line;
+		size_t      lineCount = 0;
 		while (std::getline(file, line)) {
+			++lineCount;
 			const auto trimmed = Trim(line);
 			if (trimmed.empty() || trimmed[0] == ';' || trimmed[0] == '#' || trimmed[0] == '[') {
 				continue;
@@ -762,12 +910,15 @@ namespace Settings
 				!ApplyMarkSetting(key, value) &&
 				!ApplyMagicSetting(key, value) &&
 				!ApplySurfaceSetting(key, value) &&
+				!ApplyPaintSetting(key, value) &&
 				!ApplyDiagnosticSetting(key, value)) {
 
 			}
 		}
 
 		ApplyLogLevel();
+
+		logger::info("Settings::Load finished, {} line(s) read", lineCount);
 
 		logger::info(
 			"Settings: EnableTessellation={} EnableDepthPass={} Winding={} MaxFactor={} "

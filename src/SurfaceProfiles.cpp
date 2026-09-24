@@ -463,6 +463,47 @@ namespace Surfaces
 
 		applyStampDefaults();
 
+		// The carried-weapon settings, printed for the same reason the surface
+		// values above are printed: a number typed into the ini and a number
+		// the plugin is actually using are two different things, and the only
+		// way to tell them apart from a log is for the log to say.  Nothing
+		// under this file writes these keys - they are not profile
+		// overridable - so what appears here is what the main ini supplied, or
+		// the built-in default where the key was absent.
+		logger::info("Carried weapon: FollowPose={} StampAtContact={} GateAtContact={} "
+					 "SpanFromContact={} SpanMaxGap={:.2f} SpanSteps={} ContactLineLength={:.2f} "
+					 "LowOffset={} SpanLengthScale={:.2f} LineMinLength={:.2f} "
+					 "StampRim={:.2f} StampMinDepth={:.2f} FromMesh={} | "
+					 "MarkAlignToFoot={} FootAspect={:.2f} MaxAspect={:.2f} "
+					 "RimJitter={:.2f} RimJitterBand={:.2f} - the gap is measured at "
+					 "the hull, so an object whose axis sits half a thickness above the ground "
+					 "is already touching; FromMesh swaps that hull for the object's own "
+					 "vertices, LowOffset hands the walk the distance from the object's centre "
+					 "line down to its own lowest point at that point's own place, "
+					 "SpanLengthScale widens the measured stretch to cover the snow the object "
+					 "disturbed without sinking into it, and StampRim gives the furrow the "
+					 "raised snow a footprint has (StampMinDepth is the floor under the depth "
+					 "derived from the mark's width, so 1.0 presses a weapon as deep as a foot). "
+					 "MarkAlignToFoot gives the mark the footprint's own shape: its half width "
+					 "is taken from its half length times FootAspect, floored by the object's "
+					 "thickness, and its length is capped at MaxAspect times that width, which "
+					 "is what stops a long thin mark from stacking into parallel teeth.  "
+					 "FootAspect is the knob for the mark's width - the width is the mark's "
+					 "own length times it, so a target half width is that over the longest "
+					 "mark, 24.  RimJitter roughens the mark's rim edge, which is otherwise a "
+					 "smooth ellipse that re-stamping lays down as evenly spaced ridges; it "
+					 "is only applied to line marks, so a footprint keeps the smooth shape "
+					 "the weapon was aligned to",
+			Settings::shaftFollowPose, Settings::shaftStampAtContact,
+			Settings::shaftGateAtContact, Settings::shaftSpanFromContact,
+			Settings::shaftSpanMaxGap, Settings::shaftSpanSteps,
+			Settings::shaftContactLineLength, Settings::shaftLowOffset,
+			Settings::shaftSpanLengthScale, Settings::shaftLineMinLength,
+			Settings::stampShaftRim, Settings::shaftStampMinDepth,
+			Settings::stampFromMesh, Settings::shaftMarkAlignToFoot,
+			Settings::shaftMarkFootAspect, Settings::shaftMarkMaxAspect,
+			Settings::shaftMarkRimJitter, Settings::shaftMarkRimJitterBand);
+
 		if (g_profiles.empty()) {
 			logger::info("Surfaces: no per-texture profiles found under {} - running on "
 						 "the main INI's response table and the game's material ids",
