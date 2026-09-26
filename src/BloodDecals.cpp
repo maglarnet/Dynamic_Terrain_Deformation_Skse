@@ -20,6 +20,8 @@ namespace BloodDecals
 		std::unordered_set<std::string> reportedDrawTextures;
 		bool reportedDraw{}, reportedSkip{}, reportedStart{};
 		std::unordered_set<RE::BSTempEffect*> visited;
+		// Decal nodes whose decals have been observed this frame, by Update() or by a draw.
+		std::unordered_set<RE::BGSDecalNode*> observedNodes;
 		std::array<size_t, 6> lastCounts{};
 		std::chrono::steady_clock::time_point nextCensus{};
 		const char* Diffuse(RE::BGSTextureSet* set)
@@ -100,6 +102,7 @@ namespace BloodDecals
 	{
 		targets.clear();
 		visited.clear();
+		observedNodes.clear();
 		if (!Settings::enableBloodDecals || !Settings::enableTessellation || !Settings::useClipmap) { return; }
 		if (!reportedStart) {
 			reportedStart = true;
@@ -119,6 +122,7 @@ namespace BloodDecals
 		size_t attached = 0;
 		for (const auto& node : manager->decalNodes) {
 			if (!node) { continue; }
+			observedNodes.insert(node.get());
 			const auto& effects = node->GetRuntimeData().decals;
 			attached += effects.size();
 			for (const auto& effect : effects) { Observe(effect.get()); }
@@ -138,6 +142,9 @@ namespace BloodDecals
 	{
 		if (!Settings::enableBloodDecals || !geometry) { return false; }
 		if (targets.contains(geometry)) { return true; }
+		// Observe() never makes skinned geometry a target, so a skinned decal draw can only
+		// return false here. Skin decals on actors are most of the decal draws.
+		if (geometry->GetGeometryRuntimeData().skinInstance) { return false; }
 		auto* property = geometry->GetGeometryRuntimeData().shaderProperty.get();
 		using Flag = RE::BSShaderProperty::EShaderPropertyFlag;
 		if (!property || !property->flags.any(Flag::kDecal, Flag::kDynamicDecal)) { return false; }
@@ -145,6 +152,10 @@ namespace BloodDecals
 		auto* parent = geometry->parent;
 		for (unsigned depth = 0; parent && depth < 8; ++depth, parent = parent->parent) {
 			if (auto* node = netimmerse_cast<RE::BGSDecalNode*>(parent)) {
+				// Once a frame per node: re-observing the whole node for every decal drawn under
+				// it cost the square of its decal count. A decal attached after this frame's pass
+				// is drawn natively until the next Update().
+				if (!observedNodes.insert(node).second) { break; }
 				for (const auto& effect : node->GetRuntimeData().decals) {
 					visited.erase(effect.get());
 					Observe(effect.get());
@@ -177,7 +188,7 @@ namespace BloodDecals
 	void Reset()
 	{
 		targets.clear(); reported.clear(); reportedDrawTextures.clear();
-		visited.clear(); lastCounts = {}; nextCensus = {};
+		visited.clear(); observedNodes.clear(); lastCounts = {}; nextCensus = {};
 		reportedDraw = reportedSkip = reportedStart = false;
 	}
 }
