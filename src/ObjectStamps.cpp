@@ -370,6 +370,16 @@ namespace ObjectStamps
 		}
 	}
 
+	// Called while Append is skipped (indoors): the refs and positions from before the skip
+	// would otherwise be stamped on the way back out, wherever the player is then. The timer
+	// is kept, so the first refresh outside comes on its usual schedule.
+	void Forget()
+	{
+		const std::scoped_lock lock(g_lock);
+		g_candidates.clear();
+		g_motion.clear();
+	}
+
 	void Reset()
 	{
 		HeatSources::Reset();

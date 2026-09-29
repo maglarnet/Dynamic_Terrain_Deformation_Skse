@@ -95,6 +95,8 @@ namespace Clipmap
 
 	void Update(float a_deltaSeconds);
 
+	void ForgetWindow();
+
 	inline constexpr uint32_t kParamsSlot = 13;
 
 	void BindDomain(ID3D11DeviceContext* a_context);

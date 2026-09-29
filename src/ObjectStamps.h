@@ -13,5 +13,7 @@ namespace ObjectStamps
 	void Append(float a_deltaSeconds, const RE::NiPoint3& a_anchor,
 		std::vector<Clipmap::Stamp>& a_out);
 
+	void Forget();
+
 	void Reset();
 }

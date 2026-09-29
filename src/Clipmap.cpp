@@ -992,6 +992,16 @@ namespace Clipmap
 		}
 	}
 
+	// Called while Update is skipped (indoors): the next Update reseeds every level as a
+	// window jump does, and actor motion starts fresh instead of from before the skip.
+	void ForgetWindow()
+	{
+		for (auto& valid : g_prevWindowValid) {
+			valid = false;
+		}
+		g_actorMotion.clear();
+	}
+
 	bool GetWindow(float& a_centreX, float& a_centreY, float& a_halfExtent)
 	{
 		if (!g_windowValid) {
