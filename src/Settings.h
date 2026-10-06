@@ -90,7 +90,7 @@ namespace Settings
 
 	inline float staticProbeOffset{ 0.0f };
 
-	inline bool logStaticProbe{ true };
+	inline bool logStaticProbe{ false };
 
 	inline int staticProbeMinTriangles{ 2000 };
 
