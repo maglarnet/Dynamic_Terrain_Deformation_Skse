@@ -62,6 +62,9 @@ namespace ObjectStamps
 
 			if (auto* projectile = a_ref->As<RE::Projectile>()) {
 				const auto* base = projectile->GetProjectileBase();
+				if (a_ref->As<RE::ArrowProjectile>() || (base && base->IsArrow())) {
+					return false;
+				}
 				const char* model = base ? base->GetModel() : nullptr;
 				if (model && ObjectStampFilter::IsVisualBloodProjectile(model)) {
 					if (g_visualBloodReported.size() < 16 && g_visualBloodReported.insert(base->GetFormID()).second) {
@@ -164,6 +167,12 @@ namespace ObjectStamps
 		{
 			if (a_budget == 0) {
 				return 0;
+			}
+			if (auto* projectile = a_ref->As<RE::Projectile>()) {
+				const auto* base = projectile->GetProjectileBase();
+				if (a_ref->As<RE::ArrowProjectile>() || (base && base->IsArrow())) {
+					return 0;
+				}
 			}
 
 			auto* root = a_ref->Get3D();
