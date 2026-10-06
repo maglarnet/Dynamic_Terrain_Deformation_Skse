@@ -16,6 +16,7 @@ namespace ShaderRegistry
 	bool InstallEarly();
 
 	bool Install(ID3D11Device* a_device);
+	bool InstallContextObservers(ID3D11DeviceContext* a_context);
 
 	Bytecode For(ID3D11VertexShader* a_shader);
 

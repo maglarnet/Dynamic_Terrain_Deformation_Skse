@@ -5,8 +5,8 @@
 
 #include "PCH.h"
 
-#include "ActorPaint.h"
 #include "BloodDecals.h"
+#include "BloodRoutingGate.h"
 #include "Clipmap.h"
 #include "Globals.h"
 #include "Hooks.h"
@@ -19,7 +19,8 @@
 #include "Shelter.h"
 #include "SnowCoverage.h"
 #include "SnowSparkle.h"
-#include "StampShapes.h"
+#include "TerrainActivity.h"
+#include "TerrainActivityPolicy.h"
 #include "SurfaceProfiles.h"
 #include "SurfaceTypes.h"
 #include "Tessellation.h"
@@ -35,6 +36,7 @@
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>
+#include <mutex>
 
 namespace Hooks
 {
@@ -362,235 +364,6 @@ namespace Hooks
 				triangles > 16000 ? "  <- past the 16k note" : "");
 		}
 
-		std::mutex                            g_objectSnowLock;
-		std::unordered_map<uint32_t, bool>    g_objectSnow;
-
-		bool MatoIdListed(uint32_t a_formID)
-		{
-			const std::string& list = Settings::meshSnowMatoIds;
-			if (list.empty()) {
-				return false;
-			}
-
-			size_t at = 0;
-			while (at < list.size()) {
-				size_t end = list.find(',', at);
-				if (end == std::string::npos) {
-					end = list.size();
-				}
-
-				std::string_view entry(list.data() + at, end - at);
-				while (!entry.empty() && (entry.front() == ' ' || entry.front() == '\t')) {
-					entry.remove_prefix(1);
-				}
-				while (!entry.empty() && (entry.back() == ' ' || entry.back() == '\t')) {
-					entry.remove_suffix(1);
-				}
-				if (entry.size() > 2 && entry[0] == '0' && entry[1] == 'x') {
-					entry.remove_prefix(2);
-				}
-
-				uint32_t   parsed = 0;
-				const auto first = entry.data();
-				const auto last = entry.data() + entry.size();
-				if (!entry.empty() &&
-					std::from_chars(first, last, parsed, 16).ptr == last &&
-					parsed == a_formID) {
-					return true;
-				}
-
-				at = end + 1;
-			}
-			return false;
-		}
-
-		bool ObjectIsSnow(RE::TESObjectREFR* a_ref, std::string* a_why)
-		{
-			auto* base = a_ref ? a_ref->GetBaseObject() : nullptr;
-			if (!base) {
-				if (a_why) {
-					*a_why = "no base object";
-				}
-				return false;
-			}
-
-			const uint32_t id = base->GetFormID();
-			if (!a_why) {
-				const std::scoped_lock lock(g_objectSnowLock);
-				if (const auto it = g_objectSnow.find(id); it != g_objectSnow.end()) {
-					return it->second;
-				}
-			}
-
-			bool        snowy = false;
-			std::string why;
-
-			auto* stat = base->As<RE::TESObjectSTAT>();
-			if (!stat) {
-				why = std::format("not a static (form type {})",
-					static_cast<int>(base->GetFormType()));
-			} else {
-				const bool flagged =
-					stat->data.flags.any(RE::TESObjectSTATData::Flag::kConsideredSnow);
-				auto* mato = stat->data.materialObj;
-
-				if (flagged) {
-					snowy = true;
-					why = "STAT considered-snow flag";
-				} else if (mato) {
-					const char* edid = mato->GetFormEditorID();
-					if (edid && *edid) {
-						std::string lowered(edid);
-						std::transform(lowered.begin(), lowered.end(), lowered.begin(),
-							[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-						snowy = Surfaces::MatchesKeywords(lowered, Settings::meshSnowKeywords);
-					}
-					if (!snowy) {
-						snowy = MatoIdListed(mato->GetFormID()) || Settings::meshRaiseAnyMato;
-					}
-					why = std::format("MATO {:08X} {}", mato->GetFormID(),
-						(edid && *edid) ? edid : "(no editor id - needs po3 Tweaks)");
-				} else {
-					why = "static, no snow flag, no MATO";
-				}
-			}
-
-			if (!snowy) {
-				if (const auto* asModel = base->As<RE::TESModel>()) {
-					if (const char* model = asModel->GetModel(); model && *model) {
-						std::string lowered(model);
-						std::transform(lowered.begin(), lowered.end(), lowered.begin(),
-							[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-						if (Surfaces::MatchesKeywords(lowered, Settings::meshSnowKeywords)) {
-							snowy = true;
-							why = "path";
-						}
-					}
-				}
-			}
-
-			{
-				const std::scoped_lock lock(g_objectSnowLock);
-				g_objectSnow[id] = snowy;
-			}
-			if (a_why) {
-				*a_why = why;
-			}
-			return snowy;
-		}
-
-		bool MeshRaiseFor(RE::BSRenderPass* a_pass, const DrawInfo& a_info,
-			Tessellation::DrawMaterial& a_out)
-		{
-			if (!Settings::enableMeshRaise || Settings::meshRaiseHeight <= 0.0f) {
-				return false;
-			}
-			if (a_info.isNearLand || a_info.isLodLand || !a_pass || !a_pass->geometry) {
-				return false;
-			}
-
-			auto* ref = RefForPass(a_pass);
-			if (!ref || ref->As<RE::Actor>() || !ObjectIsSnow(ref, nullptr)) {
-				return false;
-			}
-
-			auto* root = ref->Get3D();
-			if (!root) {
-				return false;
-			}
-
-			auto* base = ref->GetBaseObject();
-			if (!base) {
-				return false;
-			}
-
-			const auto& bd = base->boundData;
-			const float lo[3]{ static_cast<float>(bd.boundMin.x),
-				static_cast<float>(bd.boundMin.y), static_cast<float>(bd.boundMin.z) };
-			const float hi[3]{ static_cast<float>(bd.boundMax.x),
-				static_cast<float>(bd.boundMax.y), static_cast<float>(bd.boundMax.z) };
-
-			float topZ = -std::numeric_limits<float>::max();
-			float botZ = std::numeric_limits<float>::max();
-			if (hi[2] > lo[2] || hi[0] > lo[0]) {
-
-				for (int corner = 0; corner < 8; ++corner) {
-					const RE::NiPoint3 local{
-						(corner & 1) ? hi[0] : lo[0],
-						(corner & 2) ? hi[1] : lo[1],
-						(corner & 4) ? hi[2] : lo[2]
-					};
-					const RE::NiPoint3 world = root->world * local;
-					topZ = std::max(topZ, world.z);
-					botZ = std::min(botZ, world.z);
-				}
-			}
-
-			if (topZ <= botZ) {
-				const auto& sphere = root->worldBound;
-				if (sphere.radius <= 0.0f) {
-					return false;
-				}
-				topZ = sphere.center.z + sphere.radius;
-				botZ = sphere.center.z - sphere.radius;
-			}
-
-			a_out.meshTopZ = topZ;
-			a_out.meshBand = std::max(
-				(topZ - botZ) * std::clamp(Settings::meshRaiseBand, 0.02f, 1.0f), 1.0f);
-			return true;
-		}
-
-		std::mutex                      g_meshRaiseLock;
-		std::unordered_set<std::string> g_meshRaiseLogged;
-		constexpr size_t                kMaxMeshRaiseLogged = 48;
-
-		void LogMeshRaise(RE::TESObjectREFR* a_ref, bool a_raised,
-			const Tessellation::DrawMaterial& a_mesh)
-		{
-			if (!Settings::logMeshRaise || !a_ref) {
-				return;
-			}
-
-			const char* model = nullptr;
-			if (auto* base = a_ref->GetBaseObject()) {
-				if (const auto* asModel = base->As<RE::TESModel>()) {
-					model = asModel->GetModel();
-				}
-			}
-			if (!model || !*model) {
-				return;
-			}
-
-			{
-				std::scoped_lock lock{ g_meshRaiseLock };
-				if (g_meshRaiseLogged.size() >= kMaxMeshRaiseLogged ||
-					!g_meshRaiseLogged.emplace(model).second) {
-					return;
-				}
-			}
-
-			std::string why;
-			ObjectIsSnow(a_ref, &why);
-
-			if (a_raised) {
-				logger::info("Mesh raise: SNOW  {:<44} {} | top {:.0f} band {:.0f}", model,
-					why, a_mesh.meshTopZ, a_mesh.meshBand);
-			} else {
-				logger::info("Mesh raise: plain {:<48} {}", model, why);
-			}
-		}
-
-		bool HasColour0(const Reflection::Signature& a_signature)
-		{
-			for (const auto& e : a_signature.elements) {
-				if (e.semanticName == "COLOR" && e.semanticIndex == 0) {
-					return true;
-				}
-			}
-			return false;
-		}
-
 		std::mutex                   g_actorDrawLock;
 		std::unordered_set<uint64_t> g_observedActorDraws;
 		constexpr size_t             kMaxActorDraws = 48;
@@ -762,6 +535,13 @@ namespace Hooks
 				haveWindow ? "" : " (no window yet)");
 		}
 
+		bool NearLandscape(RE::BSRenderPass* pass)
+		{
+			auto* property = pass ? pass->shaderProperty : nullptr;
+			auto* material = property ? property->GetBaseMaterial() : nullptr;
+			return material && material->GetFeature() == kNearLand;
+		}
+
 		bool RouteBlood(RE::BSRenderPass* pass, const DrawInfo& info)
 		{
 			if (!pass) { return false; }
@@ -845,6 +625,8 @@ namespace Hooks
 
 				func(a_shader, a_pass, a_flags);
 
+				if (!TerrainActivity::Active()) { return; }
+
 				Observe("Lighting", a_pass);
 
 				if (Settings::logActorDraws) {
@@ -855,13 +637,16 @@ namespace Hooks
 					return;
 				}
 
+				const bool bloodCandidate = a_pass && BloodDecals::MayContain(a_pass->geometry);
+				if (!Settings::enableStaticProbe && !BloodRoutingGate::Relevant(false, NearLandscape(a_pass), bloodCandidate)) { return; }
+
 				if (!DrawnFromPlayerCamera()) {
 					return;
 				}
 
 				const DrawInfo info = Describe(a_pass);
 
-				if (RouteBlood(a_pass, info)) { return; }
+				if (bloodCandidate && RouteBlood(a_pass, info)) { return; }
 
 				if (Settings::enableStaticProbe && !info.isNearLand && !info.isLodLand) {
 					auto* ref = RefForPass(a_pass);
@@ -879,51 +664,6 @@ namespace Hooks
 					}
 				}
 
-				if (Settings::enableMeshRaise && !info.isNearLand && !info.isLodLand) {
-					Tessellation::DrawMaterial mesh{};
-					if (MeshRaiseFor(a_pass, info, mesh)) {
-						if (const auto* signature = SignatureFor(info)) {
-							if (Tessellation::BeginDraw(info.vertexDesc, *signature,
-										Tessellation::Mode::kMeshRaise, mesh)) {
-								LogMeshRaise(RefForPass(a_pass), true, mesh);
-							}
-						}
-						return;
-					}
-
-					LogMeshRaise(RefForPass(a_pass), false, mesh);
-				}
-
-				if (Settings::enableActorPaint && !info.isNearLand && !info.isLodLand) {
-					if (auto* actor = ActorForPass(a_pass)) {
-
-						ActorPaint::Coat coat{};
-						const bool painted = ActorPaint::For(actor->GetFormID(), coat);
-
-						if (painted || Settings::debugActorTint > 0.0f ||
-							Settings::debugPaintMask > 0) {
-							const auto* signature = SignatureFor(info);
-
-							if (signature && HasColour0(*signature)) {
-								Tessellation::DrawMaterial material{};
-								material.coatColour[0] = coat.colour[0];
-								material.coatColour[1] = coat.colour[1];
-								material.coatColour[2] = coat.colour[2];
-								material.coatAmount = coat.amount;
-								material.coatCling = coat.cling;
-								material.coatGain = coat.gain;
-								material.coatFeetZ = coat.feetZ;
-								material.coatHeight = coat.height;
-
-								if (Tessellation::BeginDraw(info.vertexDesc, *signature,
-										Tessellation::Mode::kActorPaint, material)) {
-									Profiler::Tally(Profiler::Count::kActorRouted);
-								}
-							}
-						}
-					}
-					return;
-				}
 
 				if (!info.isNearLand) {
 					return;
@@ -975,12 +715,17 @@ namespace Hooks
 			{
 				func(a_shader, a_pass, a_flags);
 
+				if (!TerrainActivity::Active()) { return; }
+
 				Observe("Utility", a_pass);
 
 				if (!Settings::enableTessellation || !Settings::enableDepthPass) {
 					return;
 				}
 
+				const bool bloodCandidate = a_pass && BloodDecals::MayContain(a_pass->geometry);
+				const bool probeCandidate = Settings::enableStaticProbe && Settings::staticProbeOffset != 0.0f;
+				if (!probeCandidate && !BloodRoutingGate::Relevant(false, NearLandscape(a_pass), bloodCandidate)) { return; }
 				const DrawInfo info = Describe(a_pass);
 
 				if (!UtilityRouting::IsCameraDepth(info.vertexTechnique)) {
@@ -996,7 +741,7 @@ namespace Hooks
 					}
 					return;
 				}
-				if (RouteBlood(a_pass, info)) { return; }
+				if (bloodCandidate && RouteBlood(a_pass, info)) { return; }
 
 				if (Settings::enableStaticProbe && Settings::staticProbeOffset != 0.0f &&
 					!info.isNearLand && !info.isLodLand) {
@@ -1010,16 +755,6 @@ namespace Hooks
 					}
 				}
 
-				if (Settings::enableMeshRaise && !info.isNearLand && !info.isLodLand) {
-					Tessellation::DrawMaterial mesh{};
-					if (MeshRaiseFor(a_pass, info, mesh)) {
-						if (const auto* signature = SignatureFor(info)) {
-							Tessellation::BeginDraw(info.vertexDesc, *signature,
-									Tessellation::Mode::kMeshRaise, mesh);
-						}
-						return;
-					}
-				}
 
 				if (!info.isNearLand) {
 					return;
@@ -1073,16 +808,8 @@ namespace Hooks
 
 			SnowSparkle::Reset();
 
-			ActorPaint::Reset();
 			ObjectStamps::Reset();
 			MagicImpacts::Reset();
-
-			if (Settings::enableStampShapes && !StampShapes::Ready()) {
-				StampShapes::Retry();
-				StampShapes::Initialize();
-			}
-
-			StampShapes::RequestAnalysis();
 
 			Clipmap::ResetDiagnostics();
 
@@ -1097,24 +824,80 @@ namespace Hooks
 
 		}
 
-		// No land draw is routed in an interior, so nothing there samples the field, the
-		// snow coverage or the shelter map - except mesh raise, which reads them on statics
-		// in any cell, so it keeps the updates running. No parent cell (mid-load) counts as
-		// outside.
-		bool FieldIdleIndoors()
+		bool RefreshTerrainActivity()
 		{
-			if (Settings::enableMeshRaise && Settings::meshRaiseHeight > 0.0f) {
-				return false;
-			}
 			auto* player = globals::game::player;
 			auto* cell = player ? player->GetParentCell() : nullptr;
-			return cell && cell->IsInteriorCell();
+			auto* world = cell && !cell->IsInteriorCell() ? player->GetWorldspace() : nullptr;
+			static RE::FormID lastWorld = 0;
+			static bool city = false;
+			const auto worldID = world ? world->GetFormID() : 0;
+			if (worldID != lastWorld) {
+				city = TerrainActivity::IsCityWorld(world);
+				lastWorld = worldID;
+			}
+			static TerrainActivity::Policy policy;
+			const bool loaded = player && cell && player->Is3DLoaded();
+			const bool interior = cell && cell->IsInteriorCell();
+			const bool reset = policy.Update(loaded && Settings::enableTessellation, interior, city, worldID);
+			if (reset) {
+				logger::info("Terrain activity: {} | world={:08X} cell={:08X} cityWorld={} interior={} loaded3D={} tess={}",
+					policy.active ? "active" : "idle", worldID, cell ? cell->GetFormID() : 0,
+					city, interior, loaded, Settings::enableTessellation);
+				TerrainActivity::active.store(false, std::memory_order_relaxed);
+				Clipmap::ForgetWindow();
+				ObjectStamps::Forget();
+				MagicImpacts::Reset();
+				BloodDecals::Reset();
+				SnowSparkle::Forget();
+				SnowCoverage::ForgetWindow();
+				Shelter::ForgetWindow();
+				Surfaces::Reset();
+				Weather::Reset();
+				Profiler::Reset();
+			}
+			TerrainActivity::active.store(policy.active, std::memory_order_relaxed);
+			return policy.active;
 		}
+
+		std::mutex g_frameWorkLock;
+		struct Main_Update
+		{
+			static void thunk(RE::Main* main, float delta)
+			{
+				func(main, delta);
+				std::lock_guard guard(g_frameWorkLock);
+				auto* player = globals::game::player;
+				auto* cell = player ? player->GetParentCell() : nullptr;
+				auto* world = player && cell && !cell->IsInteriorCell() ? player->GetWorldspace() : nullptr;
+				static RE::FormID lastWorld = 0;
+				static bool city = false;
+				static bool wasEligible = false;
+				const auto worldID = world ? world->GetFormID() : 0;
+				if (worldID != lastWorld) { city = TerrainActivity::IsCityWorld(world); lastWorld = worldID; }
+				if (!Settings::enableTessellation || !player ||
+					!player->Is3DLoaded() || !cell || cell->IsInteriorCell() || !world || city) {
+					if (wasEligible) { Clipmap::InvalidateGather(); }
+					wasEligible = false;
+					return;
+				}
+				wasEligible = true;
+				Weather::Update();
+				Shelter::UpdateCPU();
+				const float raw = globals::game::deltaTime ? *globals::game::deltaTime : 0.0f;
+				const bool paused = globals::game::ui && globals::game::ui->GameIsPaused();
+				if (Settings::useClipmap) {
+					Clipmap::GatherFrame(!paused && raw > 0.0f && raw < 0.25f ? raw : 0.0f);
+				}
+			}
+			static inline REL::Relocation<decltype(thunk)> func;
+		};
 
 		struct Main_RenderDepth
 		{
 			static void thunk(bool a1, bool a2)
 			{
+				std::unique_lock guard(g_frameWorkLock);
 
 				const float raw = globals::game::deltaTime ? *globals::game::deltaTime : 0.0f;
 				const float dt = (raw > 0.0f && raw < 0.25f) ? raw : 0.0f;
@@ -1126,43 +909,27 @@ namespace Hooks
 					ApplyReloadedSettings();
 				}
 
+				if (!RefreshTerrainActivity()) {
+					guard.unlock();
+					func(a1, a2);
+					return;
+				}
+
 				Profiler::Frame(dt);
 				Tessellation::PrepareFrame();
-
-				StampShapes::Analyse();
-
-				Weather::Update();
-
-				static bool wasIndoors = false;
-				const bool  indoors = FieldIdleIndoors();
-				if (indoors && !wasIndoors) {
-					Clipmap::ForgetWindow();
-					ObjectStamps::Forget();
-				}
-				wasIndoors = indoors;
-
-				// A shelter fade cut short at the door resumes outside: SnowCoverage compares
-				// Shelter::Revision() every update and recombines when it has moved.
-				if (!indoors) {
-					Shelter::Update();
-					SnowCoverage::Update();
-
-					if (Settings::useClipmap) {
-						Clipmap::Update(step);
-					}
-				}
+				Shelter::Upload();
+				SnowCoverage::Update();
+				if (Settings::useClipmap) { Clipmap::Update(step); }
 
 				const auto sparkleStarted = Profiler::Ticks();
 				SnowSparkle::Update(step);
 				Profiler::AddCpuTicks(Profiler::CpuScope::kSparkleUpdate, Profiler::Ticks() - sparkleStarted);
 
-				const auto actorStarted = Profiler::Ticks();
-				ActorPaint::Update(step);
-				Profiler::AddCpuTicks(Profiler::CpuScope::kActorUpdate, Profiler::Ticks() - actorStarted);
 				const auto bloodStarted = Profiler::Ticks();
 				BloodDecals::Update();
 				Profiler::AddCpuTicks(Profiler::CpuScope::kBloodUpdate, Profiler::Ticks() - bloodStarted);
 
+				guard.unlock();
 				func(a1, a2);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
@@ -1173,7 +940,7 @@ namespace Hooks
 			static void thunk(RE::BSShaderAccumulator* a_this, uint32_t a_renderFlags)
 			{
 				func(a_this, a_renderFlags);
-				SnowSparkle::Render();
+				if (TerrainActivity::Active()) { SnowSparkle::Render(); }
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
@@ -1219,6 +986,16 @@ namespace Hooks
 
 		Main_RenderDepth::func =
 			trampoline.write_call<5>(renderDepthCall, Main_RenderDepth::thunk);
+
+		const auto updateCall = REL::RelocationID(35551, 36544).address() + REL::Relocate(0x11F, 0x160);
+		if (*reinterpret_cast<const std::uint8_t*>(updateCall) != 0xE8) {
+			logger::critical("Main_Update call site {:X} is not E8; terrain disabled because CPU gathering cannot be installed safely", updateCall);
+			Settings::enableTessellation = false;
+			return;
+		}
+		Main_Update::func = trampoline.write_call<5>(updateCall, Main_Update::thunk);
+		Clipmap::InstallActorCacheEvents();
+		logger::info("Installed Main_Update CPU gathering at {:X}; render consumes prepared stamps", updateCall);
 
 		logger::info("Installed BSLightingShader/BSUtilityShader geometry hooks and the "
 		             "Main_RenderDepth field update (call site {:X}, opcode E8)",

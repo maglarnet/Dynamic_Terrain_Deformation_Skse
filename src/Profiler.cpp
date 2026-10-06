@@ -450,17 +450,16 @@ namespace Profiler
 				return;
 			}
 
-			logger::info("  Optimization test variant: coverage-overlap+blood-pr5");
 			const auto  frames = g_frameMs.n;
 			const float perFrame = 1.0f / static_cast<float>(frames);
 			const float frameAvg = g_frameMs.Avg();
 
 			logger::info("--- Profile: {} frames | clipmap {}^2 @ {:.2f} wu/cell | spacing "
-						 "{:.1f} maxfactor {:.0f} | tess={} depth={} paint={} scopes={} ---",
+						 "{:.1f} maxfactor {:.0f} | tess={} depth={} scopes={} ---",
 				frames, Clipmap::kTexels, Clipmap::kCellSize,
 				Settings::tessellationTargetSpacing, Settings::tessellationMaxFactor,
 				Settings::enableTessellation, Settings::enableDepthPass,
-				Settings::enableActorPaint, Settings::profileDrawScopes);
+				Settings::profileDrawScopes);
 
 			const float fps = frameAvg > 0.0f ? 1000.0f / frameAvg : 0.0f;
 
@@ -506,7 +505,7 @@ namespace Profiler
 				logger::info("  Landscape depth   avg {:7.3f} ms  p95 {:7.3f}  max {:7.3f}",
 					g_landDepthMs.Avg(), g_landDepthMs.P95(), g_landDepthMs.peak);
 				logger::info("  Other routed      avg {:7.3f} ms  p95 {:7.3f}  max {:7.3f}   "
-							 "(actor paint, and the probe and mesh raise when on)",
+							 "(static probe when on)",
 					g_actorMs.Avg(), g_actorMs.P95(), g_actorMs.peak);
 
 				if (g_scopeDrops > 0) {
@@ -537,10 +536,11 @@ namespace Profiler
 				shelter.Avg(), shelter.P95(), shelter.peak);
 
 			for (const auto& [scope, name] : {
+				std::pair{ CpuScope::kShelterUpload, "Shelter upload CPU" },
+				std::pair{ CpuScope::kGatherHandoff, "Gather handoff CPU" },
 				std::pair{ CpuScope::kObjectScan, "Object scan CPU" },
 				std::pair{ CpuScope::kShaderPrepare, "Shader prepare CPU" },
 				std::pair{ CpuScope::kMagicImpacts, "Magic impacts CPU" },
-				std::pair{ CpuScope::kActorUpdate, "Actor update CPU" },
 				std::pair{ CpuScope::kBloodUpdate, "Blood update CPU" },
 				std::pair{ CpuScope::kBloodLookup, "Blood lookup CPU" },
 				std::pair{ CpuScope::kSparkleUpdate, "Sparkle update CPU" },
@@ -566,13 +566,23 @@ namespace Profiler
 			};
 
 			const float colourRouted = count(Count::kLandscapeRouted);
+			logger::info("  Shelter phases    avg {:.2f} CPU updates/frame, {:.2f} cap uploads/frame (probes/fades/filtering after Main_Update)",
+				count(Count::kShelterCPUUpdates), count(Count::kShelterUploads));
+			logger::info("  Actor collisions  avg {:.1f} cache hits/frame, {:.2f} rebuilds/frame, {:.1f} cached objects read/frame | safety audit ~1 s",
+				count(Count::kActorCacheHits), count(Count::kActorCacheBuilds), count(Count::kActorCollisionReads));
+			logger::info("  Gather handoff    avg {:.2f} prepared/frame, {:.2f} rejected/frame, {:.2f} empty/frame (CPU work runs after Main_Update)",
+				count(Count::kGatherPrepared), count(Count::kGatherRejected), count(Count::kGatherEmpty));
 			logger::info("  Coverage combine  avg {:.1f} cells scaled/frame vs {:.1f} previous lookups/frame",
 				count(Count::kCoverageScaled), count(Count::kCoverageCombineFull));
 			logger::info("  Shelter fades     avg {:.1f} cells visited/frame vs {:.1f} full-sweep cells/frame",
 				count(Count::kShelterFadeVisited), count(Count::kShelterFadeFull));
-			logger::info("  Shelter probes    avg {:.1f} attempts/frame, {:.1f} misses/frame, {:.1f} rays/frame | peak {} attempts/frame | limit {}",
+			logger::info("  Coverage work     avg {:.1f} land queries/frame, {:.1f} misses/frame, {:.1f} cells pending/frame",
+				count(Count::kCoverageLandQueries), count(Count::kCoverageLandMisses), count(Count::kCoveragePending));
+			logger::info("  Shelter probes    avg {:.1f} land queries/frame, {:.1f} misses/frame, {:.1f} rays/frame | peak {} queries/frame | limit {}",
 				count(Count::kShelterLandAttempts), count(Count::kShelterLandMisses),
 				count(Count::kShelterRays), g_shelterProbePeak, std::max(Settings::shelterBudget, 1));
+			logger::info("  Shelter cache     avg {:.1f} successful heights reused/frame | refresh {} cells/60Hz step, batched at 4 Hz",
+				count(Count::kShelterLandCached), Settings::shelterRefresh);
 			const float depthRouted = count(Count::kDepthRouted);
 
 			logger::info("  Routing colour    seen {:5.1f}  culled {:5.1f}  routed {:5.1f} "
@@ -582,8 +592,6 @@ namespace Profiler
 						 "draws/frame  (+{:.1f} shadow-map draws left vanilla)",
 				count(Count::kDepthSeen), count(Count::kDepthCulled), depthRouted,
 				count(Count::kDepthShadowSkipped));
-			logger::info("  Routing actors    {:5.1f} draws/frame painted",
-				count(Count::kActorRouted));
 
 			const double staticSeen = count(Count::kStaticSeen);
 			if (staticSeen > 0.0) {
@@ -769,6 +777,8 @@ namespace Profiler
 		if (!g_initialized) {
 			return;
 		}
+
+		if (globals::d3d::context) { CloseSpan(globals::d3d::context); }
 
 		ClearAccumulators();
 		g_reportTimer = 0.0f;

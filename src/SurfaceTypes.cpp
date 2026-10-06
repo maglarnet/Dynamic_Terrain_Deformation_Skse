@@ -294,12 +294,6 @@ namespace Surfaces
 		return Matches(a_name, a_keywords);
 	}
 
-	const Paint& PaintFor(Type a_type)
-	{
-		const auto index = static_cast<size_t>(a_type);
-		return index < static_cast<size_t>(Type::kCount) ? Settings::surfacePaint[index] :
-		                                                   Settings::surfacePaint[0];
-	}
 
 	const char* Name(Type a_type)
 	{

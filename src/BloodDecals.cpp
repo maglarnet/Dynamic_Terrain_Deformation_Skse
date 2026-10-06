@@ -4,6 +4,7 @@
 #include "PCH.h"
 #include "BloodDecals.h"
 #include "BloodDecalFilter.h"
+#include "BloodRoutingGate.h"
 #include "Settings.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -140,6 +141,18 @@ namespace BloodDecals
 			lastCounts = counts;
 			nextCensus = now + std::chrono::seconds(5);
 		}
+	}
+
+	bool MayContain(RE::BSGeometry* geometry)
+	{
+		if (!Settings::enableBloodDecals || !Settings::useClipmap || !geometry) { return false; }
+		const auto& data = geometry->GetGeometryRuntimeData();
+		if (data.skinInstance) { return false; }
+		auto* property = data.shaderProperty.get();
+		using Flag = RE::BSShaderProperty::EShaderPropertyFlag;
+		return BloodRoutingGate::Candidate(true, true, false,
+			property && property->flags.any(Flag::kDecal, Flag::kDynamicDecal),
+			[&] { return !targets.empty() && targets.contains(geometry); });
 	}
 
 	bool Contains(RE::BSGeometry* geometry)

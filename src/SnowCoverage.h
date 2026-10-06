@@ -25,6 +25,7 @@ namespace SnowCoverage
 	void Update();
 
 	void Reset();
+	void ForgetWindow();
 
 	float At(float a_worldX, float a_worldY);
 

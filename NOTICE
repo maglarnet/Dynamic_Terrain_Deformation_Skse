@@ -18,6 +18,15 @@ Community Shaders (GPLv3)
   relocation references also present in Community Shaders' globals files.
   Credit to the Community Shaders contributors for these references.
 
+  The Main_Update call-site/signature reference in src/Hooks.cpp was also
+  verified against Community Shaders src/Hooks.cpp (dev, October 3, 2026).
+  CPU gathering, collision caching and snapshot handoff are NMN implementations.
+
+  tools/offline/fixtures/cs191_offset_vs.asm is compiled/disassembled from
+  Community Shaders 1.9.1 Shaders/Utility.hlsl with its included headers,
+  using VSHADER, RENDER_DEPTH and OFFSET_DEPTH. It is a GPLv3 regression fixture
+  for the terrain-depth correction in src/TerrainDepthBias.h.
+
   These provenance notices were added September 28, 2026.
 
 Iwillbewarlock / qtuna contributed the blood-decal performance fix (PR #5).
@@ -43,3 +52,7 @@ complete terms and attributions.
 
 The clipmap stamp-group rejection and coverage-overlap optimizations also
 follow ideas proposed by qtuna / Iwillbewarlock in their optimization work.
+MinHook (extern/minhook) is used for native processing-draw compatibility.
+Copyright (C) 2009-2017 Tsuda Kageyu; distributed under the BSD 2-Clause
+license and component notices preserved in extern/minhook/LICENSE.txt.
+Upstream: https://github.com/TsudaKageyu/minhook

@@ -23,12 +23,14 @@
 #include <chrono>
 #include <random>
 #include "ShelterScan.h"
+#include "ShelterProbeCache.h"
 #include "BlanketTessellation.h"
 #include "TessellationResources.h"
 #include "BloodDecalFilter.h"
 #include "ObjectStampFilter.h"
 #include "TerrainDepthBias.h"
 #include "TerrainCulling.h"
+#include "TerrainActivityPolicy.h"
 #include <limits>
 #include <fstream>
 #include <iterator>
@@ -805,6 +807,72 @@ int main(int argc, char** argv)
 		Require(ShelterTransition::Alpha(std::numeric_limits<float>::quiet_NaN()) == 0, "Invalid delta must be ignored");
 		std::puts("PASS shelter transitions: frame rate, pause, reversal and invalid time");
 		TestShelterScan();
+		{
+			for (const int fps : { 30, 60, 144, 300 }) {
+				ShelterProbe::Clock clock;
+				uint32_t refreshed = 0, polls = 0;
+				for (int frame = 0; frame < fps * 10; ++frame) {
+					const auto tick = clock.Advance(1.0f / fps, 16, 16384);
+					refreshed += tick.cells; polls += tick.due;
+				}
+				Require(refreshed >= 9599 && refreshed <= 9601 && polls == 40, "Refresh rate must be 960 cells/s at every tested FPS");
+				const auto before = clock.now;
+				Require(!clock.Advance(0, 16, 16384).due && clock.now == before, "Pause does not age shelter");
+				Require(!clock.Advance(-1, 16, 16384).due && !clock.Advance(std::numeric_limits<float>::quiet_NaN(), 16, 16384).due && clock.now == before, "Invalid time cannot age shelter");
+			}
+			ShelterProbe::Clock clock;
+			Require(!clock.Advance(20, 16, 16384).due && std::abs(clock.now - 0.1) < 1e-6, "Long stalls are clamped instead of producing a refresh spike");
+			ShelterProbe::Clock disabled;
+			for (int i = 0; i < 15; ++i) {
+				const auto tick = disabled.Advance(1.0f / 60, 0, 16384);
+				Require(tick.cells == 0, "Zero refresh never invalidates successful roof results");
+			}
+			ShelterProbe::LandCell cell;
+			float height = 123;
+			Require(!cell.Get(0, 0, height), "Empty height cache cannot impersonate zero-coordinate terrain");
+			cell.Store(-65, 129, 0);
+			Require(cell.Get(-65, 129, height) && height == 0, "Zero-height terrain is a valid cached sample");
+			Require(!cell.Get(63, 129, height), "Toroidal index reuse must not return a different coordinate's height");
+			cell.Miss(63, 129, 1);
+			Require(!cell.Get(63, 129, height) && !cell.CanRetry(63, 129, 1.49) && cell.CanRetry(63, 129, 1.5), "Failed land retries after 0.5s, not every frame or never");
+			Require(cell.CanRetry(-65, 129, 1.1), "Movement to different coordinates bypasses old retry delay");
+			cell.Store(63, 129, -20);
+			Require(cell.Get(63, 129, height) && height == -20, "Late-loaded land replaces a failed cache entry");
+			cell = {};
+			Require(!cell.Get(63, 129, height), "World/reset clears heights");
+			std::puts("PASS shelter probe cache: 30/60/144/300 FPS cadence, pauses, stalls, coordinate wrap, misses and reset");
+		}
+		{
+			struct Location {
+				bool city;
+				Location* parentLoc;
+				bool HasKeywordString(std::string_view key) const { return city && key == "LocTypeCity"; }
+			};
+			Location city{ true, nullptr }, shop{ false, &city }, wild{ false, nullptr };
+			Location cycle{ false, nullptr }; cycle.parentLoc = &cycle;
+			Require(TerrainActivity::IsCity(&city) && TerrainActivity::IsCity(&shop), "City and nested city location excluded");
+			Require(!TerrainActivity::IsCity(&wild) && !TerrainActivity::IsCity(&cycle) && !TerrainActivity::IsCity<Location>(nullptr), "Wilderness, missing and cyclic location handling");
+			struct World { World* parentWorld; Location* location; };
+			World tamriel{ nullptr, &wild }, cityWorld{ &tamriel, &city }, exterior{ &tamriel, &wild };
+			World sharedCityTagged{ nullptr, &city }, unknownWorld{ &tamriel, nullptr };
+			Require(TerrainActivity::IsCityWorld(&cityWorld), "Dedicated city world idles");
+			Require(!TerrainActivity::IsCityWorld(&tamriel) && !TerrainActivity::IsCityWorld(&sharedCityTagged), "Shared exterior remains active even with a city tag");
+			Require(!TerrainActivity::IsCityWorld(&exterior) && !TerrainActivity::IsCityWorld(&unknownWorld) && !TerrainActivity::IsCityWorld<World>(nullptr), "Exterior and unknown world locations are not city exclusions");
+			TerrainActivity::Policy policy;
+			Require(!policy.Update(false, false, false, 0) && !policy.active, "Startup without loaded world idles");
+			Require(policy.Update(true, false, false, 1) && policy.active, "First exterior frame clears stale state");
+			Require(!policy.Update(true, false, false, 1) && policy.active, "Stable exterior retains trails");
+			Require(!policy.Update(true, false, TerrainActivity::IsCityWorld(&tamriel), 1) && policy.active, "Windhelm exterior city ancestry does not disable shared landscape");
+			Require(policy.Update(true, false, true, 1) && !policy.active, "Dedicated city world idles");
+			Require(!policy.Update(true, false, true, 1), "Stable city does not repeat resets");
+			Require(policy.Update(true, false, false, 1) && policy.active, "Leaving city resumes");
+			Require(policy.Update(true, true, false, 0) && !policy.active, "Interior transition idles");
+			Require(!policy.Update(true, true, false, 0), "Stable interior does not repeat resets");
+			Require(policy.Update(true, false, false, 2) && policy.active, "New exterior world resumes");
+			Require(policy.Update(true, false, false, 3) && policy.active, "Direct exterior world change clears old state");
+			Require(policy.Update(false, false, false, 3) && !policy.active, "Unloaded 3D idles even with old world pointer");
+			std::puts("PASS terrain activity: city ancestry, malformed parents, interiors, unloads, resume and world changes");
+		}
 		TestActiveShelterFades();
 		Require(BloodDecalFilter::Matches("textures/effects/BloodSplatter01.DDS", " blood "), "Blood basename matching");
 		Require(BloodDecalFilter::Matches("custom/EBT_pool.dds", "blood,ebt_"), "Custom blood prefix");
@@ -829,6 +897,24 @@ int main(int argc, char** argv)
             "Shader normalization excludes comments and normalizes whitespace");
         Require(TerrainDepthBias::Recognize("vs_5_0\nret\n") == 0, "Unknown shaders remain uncorrected");
         Require(TerrainDepthBias::Recognize("") == 0, "Missing shader remains uncorrected");
+		{
+			std::ifstream file(std::string(TERRAIN_TEST_FIXTURE_DIR) + "/cs191_offset_vs.asm", std::ios::binary);
+			Require(file.is_open(), "CS 1.9.1 shader fixture opens");
+			const std::string captured{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+			Require(TerrainDepthBias::Recognize(captured) == 5.0f, "CS 1.9.1 offset shader recognized");
+			auto changed = captured;
+			const auto offset = changed.find("5.000000");
+			Require(offset != std::string::npos, "CS 1.9.1 fixture has offset");
+			changed.replace(offset, 8, "6.000000");
+			Require(TerrainDepthBias::Recognize(changed) == 0, "Unverified offset remains uncorrected");
+			changed = captured;
+			const auto matrix = changed.find("cb12[10]");
+			Require(matrix != std::string::npos, "CS 1.9.1 fixture has projection row");
+			changed.replace(matrix, 8, "cb12[11]");
+			Require(TerrainDepthBias::Recognize(changed) == 0, "Unverified projection remains uncorrected");
+			Require(TerrainDepthBias::Recognize("// header\n" + captured + "// footer\n") == 5.0f,
+				"CS 1.9.1 comments do not change recognition");
+		}
 
         if (argc > 1) {
             std::ifstream file(argv[1], std::ios::binary);
@@ -839,7 +925,7 @@ int main(int argc, char** argv)
             const auto offset = changed.find("10.000000");
             Require(offset != std::string::npos, "Local capture has expected offset");
             changed.replace(offset, 9, "5.000000");
-            Require(TerrainDepthBias::Recognize(changed) == 0, "Different offset remains uncorrected");
+            Require(TerrainDepthBias::Recognize(changed) == 5.0f, "Validated CS 1.9.1 offset also recognized");
             changed = captured;
             const auto matrix = changed.find("cb12[10]");
             Require(matrix != std::string::npos, "Local capture has expected matrix");

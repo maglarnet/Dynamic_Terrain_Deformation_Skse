@@ -19,5 +19,6 @@ namespace SnowSparkle
 	void Render();
 
 	void Reset();
+	void Forget();
 	void Release();
 }

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 NearMidnightNow (NMN).
 
 #include "PCH.h"
+#include "TerrainActivity.h"
 #include "MagicImpacts.h"
 #include "ImpactPatterns.h"
 #include "Settings.h"
@@ -87,10 +88,11 @@ namespace MagicImpacts
 
 		void Queue(Event event)
 		{
-			if (!g_enabled.load(std::memory_order_relaxed) || !event.space ||
+			if (!TerrainActivity::Active() || !g_enabled.load(std::memory_order_relaxed) || !event.space ||
 				!Finite(event.position) || !Finite(event.direction)) { return; }
 			event.time = Clock::now();
 			const std::scoped_lock lock(g_lock);
+			if (!TerrainActivity::Active()) { return; }
 
 			for (size_t i = 0; i < g_count; ++i) {
 				const auto& previous = g_queue[(g_head + i) % g_queue.size()];
@@ -123,7 +125,7 @@ namespace MagicImpacts
 				const RE::NiPoint3& position, const RE::NiPoint3& velocity,
 				RE::hkpCollidable* collidable, int32_t arg6, uint32_t arg7)
 			{
-				if (g_enabled.load(std::memory_order_relaxed)) {
+				if (TerrainActivity::Active() && g_enabled.load(std::memory_order_relaxed)) {
 					auto* spell = projectile->GetProjectileRuntimeData().spell;
 					Element element{};
 					if (Classify(spell, element)) {
@@ -156,7 +158,7 @@ namespace MagicImpacts
 			static void thunk(RE::Explosion* explosion)
 			{
 				func(explosion);
-				if (!g_enabled.load(std::memory_order_relaxed)) { return; }
+				if (!TerrainActivity::Active() || !g_enabled.load(std::memory_order_relaxed)) { return; }
 				auto* object = explosion->GetBaseObject();
 				auto* base = object ? object->As<RE::BGSExplosion>() : nullptr;
 				if (!base) { return; }
@@ -193,7 +195,7 @@ namespace MagicImpacts
 			RE::BSEventNotifyControl ProcessEvent(const RE::TESSpellCastEvent* event,
 				RE::BSTEventSource<RE::TESSpellCastEvent>*) override
 			{
-				if (event && event->object && g_enabled.load(std::memory_order_relaxed)) {
+				if (TerrainActivity::Active() && event && event->object && g_enabled.load(std::memory_order_relaxed)) {
 					auto* spell = RE::TESForm::LookupByID<RE::SpellItem>(event->spell);
 					Element element{};
 					if (GroundShout(spell) &&

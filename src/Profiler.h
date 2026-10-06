@@ -31,18 +31,29 @@ namespace Profiler
 		kDepthShadowSkipped,
 		kDepthRouted,
 
-		kActorRouted,
 
 		kStaticSeen,
 		kStaticRouted,
 		kShaderBuilds,
 		kShelterLandAttempts,
+		kCoverageLandQueries,
+		kCoverageLandMisses,
+		kCoveragePending,
+		kShelterLandCached,
 		kShelterLandMisses,
 		kShelterRays,
 		kShelterFadeVisited,
 		kShelterFadeFull,
 		kCoverageScaled,
 		kCoverageCombineFull,
+		kActorCacheHits,
+		kActorCacheBuilds,
+		kActorCollisionReads,
+		kGatherPrepared,
+		kGatherRejected,
+		kGatherEmpty,
+		kShelterCPUUpdates,
+		kShelterUploads,
 		kCount
 	};
 
@@ -61,14 +72,15 @@ namespace Profiler
 		kDrawBracket,
 
 		kGatherStamps,
+		kGatherHandoff,
 
 		kSnowCoverage,
 
 		kShelter,
+		kShelterUpload,
 		kObjectScan,
 		kShaderPrepare,
 		kMagicImpacts,
-		kActorUpdate,
 		kBloodUpdate,
 		kBloodLookup,
 		kSparkleUpdate,

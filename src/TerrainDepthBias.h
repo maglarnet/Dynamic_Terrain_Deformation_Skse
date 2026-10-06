@@ -11,6 +11,7 @@ namespace TerrainDepthBias
 {
 
 inline constexpr std::string_view capturedFingerprint = "98fa4a016ed7c8ec47e0a1f8a1268fcb122d9eef0b9ea4034926502e7adfc5c4";
+inline constexpr std::string_view cs191Fingerprint = "912728acae006bf1d05e51e508c6eb52b57e326ea0a87977eb73712623524561";
 inline std::string Fingerprint(std::string_view text)
 {
     if (text.size() > (std::numeric_limits<ULONG>::max)()) return {};
@@ -55,6 +56,9 @@ inline std::string Instructions(std::string_view text)
 }
 inline float Recognize(std::string_view assembly)
 {
-    return Fingerprint(Instructions(assembly)) == capturedFingerprint ? 10.0f : 0.0f;
+    const auto fingerprint = Fingerprint(Instructions(assembly));
+    if (fingerprint == capturedFingerprint) { return 10.0f; }
+    if (fingerprint == cs191Fingerprint) { return 5.0f; }
+    return 0.0f;
 }
 }

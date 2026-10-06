@@ -94,22 +94,6 @@ namespace Settings
 
 	inline int staticProbeMinTriangles{ 2000 };
 
-	inline bool enableMeshRaise{ false };
-
-	inline float meshRaiseHeight{ 0.0f };
-
-	inline float meshRaiseBand{ 0.5f };
-
-	inline std::string meshSnowKeywords{ "snow,ice,frost,icicle" };
-
-	inline bool meshRaiseAnyMato{ false };
-
-	inline std::string meshSnowMatoIds{ "" };
-
-	inline bool debugMeshRaiseFlat{ false };
-
-	inline bool logMeshRaise{ false };
-
 	inline bool logSnowCoverage{ false };
 
 	inline bool enableWeather{ false };
@@ -180,49 +164,10 @@ namespace Settings
 		  { 0.00f, 1.00f, 0.30f, 1.00f, 0.00f, 0.0f, 1.0f },
 	};
 
-	inline Surfaces::Paint surfacePaint[static_cast<size_t>(Surfaces::Type::kCount)]{
-		  { { 0.00f, 0.00f, 0.00f }, 0.00f, 0.00f, 1.0f },
-		  { { 0.92f, 0.94f, 0.98f }, 0.90f, 0.95f, 1.0f },
-		  { { 0.00f, 0.00f, 0.00f }, 0.00f, 0.00f, 1.0f },
-		  { { 0.34f, 0.26f, 0.17f }, 0.25f, 0.00f, 1.0f },
-		  { { 0.16f, 0.12f, 0.08f }, 1.00f, 0.00f, 1.0f },
-		  { { 0.70f, 0.62f, 0.44f }, 0.45f, 0.10f, 1.6f },
-		  { { 0.24f, 0.23f, 0.23f }, 0.70f, 0.35f, 1.0f },
-		  { { 0.00f, 0.00f, 0.00f }, 0.00f, 0.00f, 1.0f },
-		  { { 0.00f, 0.00f, 0.00f }, 0.00f, 0.00f, 1.0f },
-	};
-
-	inline float paintPickupRate{ 0.80f };
-
-	inline float paintBlendRate{ 0.35f };
-
-	inline float paintFullSpeed{ 200.0f };
-
-	inline float paintStandingScale{ 0.25f };
-
-	inline float paintKeepPerSecond{ 0.97f };
-	inline float paintKeepRunning{ 0.90f };
-
-	inline float paintReach{ 20.0f };
-
-	inline float paintReachFraction{ 0.22f };
-
-	inline float paintReachPlateau{ 0.3f };
-
-	inline float paintClingAngle{ 55.0f };
-	inline float paintClingFeather{ 20.0f };
-
-	inline float paintStrength{ 1.0f };
-
-	inline float paintNoise{ 1.0f };
-
-	inline bool logActorPaint{ false };
-
 	inline bool logStampSurfaces{ false };
 
 	inline bool seasonalTextureSwap{ true };
 
-	inline bool enableStampShapes{ false };
 
 	inline float stampReposeRate{ 0.01f };
 
@@ -317,23 +262,18 @@ namespace Settings
 
 	inline bool logHeatSources{ false };
 
-	inline bool logStampShape{ false };
 
 	inline bool enableLiveReload{ true };
 
 	inline float liveReloadInterval{ 0.5f };
 
-	inline bool enableActorPaint{ false };
 	inline bool enableBloodDecals{ true };
 
 	inline bool bloodDecalsIgnoreShaderIdentity{ true };
 	inline std::string bloodDecalTexturePrefixes{ "blood,decalsblood,bigspatter" };
 
-	inline int debugPaintMask{ 0 };
 
-	inline float debugActorTint{ 0.0f };
 
-	inline float debugActorTintColour[3]{ 1.0f, 0.0f, 0.8f };
 
 	inline bool enableLogging{ false };
 

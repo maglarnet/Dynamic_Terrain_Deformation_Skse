@@ -25,6 +25,7 @@ namespace TerrainBlendDiagnostics
 		bool frontCCW{}, depthClip{}, blendEnabled{};
 		int rasterBias{};
 		float slopeBias{};
+		float correctionBias{};
 	};
 	inline Snapshot before{};
 	inline bool armed{}, started{};
@@ -57,9 +58,10 @@ namespace TerrainBlendDiagnostics
 		}
 	}
 
-	inline Snapshot Capture(ID3D11DeviceContext* context)
+	inline Snapshot Capture(ID3D11DeviceContext* context, float correctionBias)
 	{
 		Snapshot result;
+		result.correctionBias = correctionBias;
 		ID3D11VertexShader* vs{}; ID3D11HullShader* hs{}; ID3D11DomainShader* ds{};
 		ID3D11DepthStencilView* target{}; ID3D11DepthStencilState* depth{};
 		ID3D11Buffer* vsFrame{}; ID3D11Buffer* dsFrame{};
@@ -118,27 +120,28 @@ namespace TerrainBlendDiagnostics
 	{
 		return std::format("VS={:X} HS={:X} DS={:X} DSV={:X} format={} topology={} depth={}/{}/{} frameVS={:X} frameDS={:X}",
 			s.vs, s.hs, s.ds, s.target, s.format, s.topology, s.depthEnabled, s.depthFunc, s.depthWrite, s.vsFrame, s.dsFrame) +
+			std::format(" correctionBias={}", s.correctionBias) +
 			std::format(" PS={:X} TB55={:X} cull={} frontCCW={} fill={} depthClip={} rasterBias={}/{} blend0={}/{}/{}/{} write0={}",
 				s.ps, s.blendDepthView, s.cull, s.frontCCW, s.fill, s.depthClip, s.rasterBias, s.slopeBias,
 				s.blendEnabled, s.blendSrc, s.blendDst, s.blendOp, s.writeMask);
 	}
-	inline void Begin(ID3D11DeviceContext* context)
+	inline void Begin(ID3D11DeviceContext* context, float correctionBias)
 	{
 		armed = false;
 		if (!Settings::logTerrainBlendDraws || !Settings::enableLogging) { return; }
 		const auto now = std::chrono::steady_clock::now();
 		if (!started) {
 			started = true; deadline = now + std::chrono::seconds(60);
-			logger::info("TB diagnostic v2 started: raster/blend/PS capture; 60 seconds / 65536 terrain draws, 32 state pairs, 8 VS listings; observation only");
+			logger::info("TB diagnostic v3 started: correction bias/raster/blend/PS capture; 60 seconds / 65536 terrain draws, 32 state pairs, 8 VS listings; observation only");
 		}
 		if (now >= deadline || samples >= 65536 || reported.size() >= 32) { return; }
-		++samples; before = Capture(context); armed = true;
+		++samples; before = Capture(context, correctionBias); armed = true;
 	}
-	inline void End(ID3D11DeviceContext* context)
+	inline void End(ID3D11DeviceContext* context, float correctionBias)
 	{
 		if (!armed) { return; }
 		armed = false;
-		const auto after = Capture(context);
+		const auto after = Capture(context, correctionBias);
 		const auto pair = Describe(before) + " -> " + Describe(after);
 		if (reported.insert(pair).second) { logger::info("TB diagnostic pair {}: {}", reported.size(), pair); }
 	}

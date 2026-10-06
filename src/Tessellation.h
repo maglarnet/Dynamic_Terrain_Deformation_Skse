@@ -10,16 +10,13 @@ namespace Tessellation
 
 	inline constexpr uint32_t kMaterialSlot = 11;
 
-	inline constexpr uint32_t kActorPaintSlot = 10;
 
 	enum class Mode
 	{
 		kLandscape,
-		kActorPaint,
 
 		kStaticProbe,
 
-		kMeshRaise,
 
 		kBloodDecal,
 	};
@@ -32,22 +29,11 @@ namespace Tessellation
 
 		int revealLayer{ -1 };
 
-		float meshTopZ{ 0.0f };
-		float meshBand{ 0.0f };
 
 		int snowLayer{ -1 };
 
 		float strengthScale{ 1.0f };
 
-		float coatColour[3]{ 0.0f, 0.0f, 0.0f };
-		float coatAmount{ 0.0f };
-
-		float coatCling{ 0.0f };
-
-		float coatGain{ 1.0f };
-
-		float coatFeetZ{ 0.0f };
-		float coatHeight{ 0.0f };
 	};
 
 	bool BeginDraw(uint64_t a_vertexDesc, const Reflection::Signature& a_signature,

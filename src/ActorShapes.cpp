@@ -8,6 +8,7 @@
 #include "PCH.h"
 
 #include "ActorShapes.h"
+#include "CollisionRadius.h"
 
 #include <algorithm>
 #include <cmath>
@@ -57,37 +58,15 @@ namespace ActorShapes
 			       RE::bhkWorld::GetWorldScaleInverse();
 		};
 
-		const float hx = 0.5f * (project(1.0f, 0.0f, 0.0f) - project(-1.0f, 0.0f, 0.0f));
-		const float hy = 0.5f * (project(0.0f, 1.0f, 0.0f) - project(0.0f, -1.0f, 0.0f));
-		const float hz = 0.5f * (project(0.0f, 0.0f, 1.0f) - project(0.0f, 0.0f, -1.0f));
-
+		CollisionRadius::Kind kind = CollisionRadius::Kind::Other;
 		switch (a_shape->type) {
-		case RE::hkpShapeType::kSphere:
-
-			a_radius = hx;
-			return true;
-
-		case RE::hkpShapeType::kCapsule:
-
-			a_radius = std::max({ hx, hy, hz });
-			return true;
-
-		case RE::hkpShapeType::kBox:
-
-			a_radius = std::sqrt(hx * hx + hy * hy + hz * hz);
-			return true;
-
-		case RE::hkpShapeType::kCylinder: {
-
-			const float radial = std::max(hx, hy);
-			a_radius = std::sqrt(radial * radial + hz * hz);
-			return true;
+		case RE::hkpShapeType::kSphere: kind = CollisionRadius::Kind::Sphere; break;
+		case RE::hkpShapeType::kCapsule: kind = CollisionRadius::Kind::Capsule; break;
+		case RE::hkpShapeType::kBox: kind = CollisionRadius::Kind::Box; break;
+		case RE::hkpShapeType::kCylinder: kind = CollisionRadius::Kind::Cylinder; break;
+		default: break;
 		}
-
-		default:
-
-			a_radius = std::max({ hx, hy, hz });
-			return true;
-		}
+		a_radius = CollisionRadius::Evaluate(kind, project);
+		return true;
 	}
 }

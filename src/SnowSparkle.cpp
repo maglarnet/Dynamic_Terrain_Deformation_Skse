@@ -714,6 +714,13 @@ float4 main(VSOut i) : SV_TARGET
 		g_reportedFull = false;
 	}
 
+	void Forget()
+	{
+		g_flakes.clear();
+		g_contactCount = 0;
+		g_budget = 0.0f;
+	}
+
 	void Release()
 	{
 		g_flakes.clear();

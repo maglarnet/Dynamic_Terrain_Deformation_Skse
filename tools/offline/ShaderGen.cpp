@@ -4,7 +4,6 @@
 #include "PCH.h"
 
 #include "ClipmapUpdateCS.h"
-#include "StampShapeAnalysisCS.h"
 #include "ShaderReflection.cpp"
 #include "Tessellation.cpp"
 
@@ -79,44 +78,6 @@ namespace
 		return s;
 	}
 
-	Reflection::Signature ActorSignature()
-	{
-		Reflection::Signature s{};
-		s.valid = true;
-		s.elements = {
-			Element("SV_POSITION", 0, 0, "float4"),
-			Element("TEXCOORD", 0, 1, "float2"),
-			Element("TEXCOORD", 4, 2, "float3"),
-			Element("TEXCOORD", 1, 3, "float3"),
-			Element("TEXCOORD", 2, 4, "float3"),
-			Element("TEXCOORD", 3, 5, "float3"),
-			Element("TEXCOORD", 5, 6, "float3"),
-			Element("TEXCOORD", 8, 7, "float3"),
-			Element("TEXCOORD", 9, 8, "float3"),
-			Element("TEXCOORD", 10, 9, "float3"),
-			Element("POSITION", 1, 10, "float4"),
-			Element("POSITION", 2, 11, "float4"),
-			Element("COLOR", 0, 12, "float4"),
-			Element("COLOR", 1, 13, "float4"),
-		};
-		return s;
-	}
-
-	Reflection::Signature ActorNoNormalSignature()
-	{
-		Reflection::Signature s = ActorSignature();
-
-		std::erase_if(s.elements, [](const Reflection::SignatureElement& a_e) {
-			return a_e.semanticName == "TEXCOORD" && a_e.semanticIndex >= 1 &&
-			       a_e.semanticIndex <= 3;
-		});
-
-		for (uint32_t i = 0; i < s.elements.size(); ++i) {
-			s.elements[i].registerIndex = i;
-		}
-		return s;
-	}
-
 	int g_failures = 0;
 
 	void Check(const std::string& a_source, const char* a_target, const std::string& a_label,
@@ -134,6 +95,14 @@ namespace
 		if (SUCCEEDED(hr)) {
 			std::printf("  PASS  %-28s %-7s %6zu bytes -> %s\n", a_label.c_str(), a_target,
 				code->GetBufferSize(), path.string().c_str());
+			ID3DBlob* assembly = nullptr;
+			if (SUCCEEDED(D3DDisassemble(code->GetBufferPointer(), code->GetBufferSize(),
+				0, nullptr, &assembly))) {
+				std::ofstream(a_outDir / (a_label + ".asm"))
+					.write(static_cast<const char*>(assembly->GetBufferPointer()),
+						static_cast<std::streamsize>(assembly->GetBufferSize() - 1));
+				assembly->Release();
+			}
 		} else {
 			++g_failures;
 			std::printf("  FAIL  %-28s %-7s hr=0x%08X -> %s\n", a_label.c_str(), a_target,
@@ -177,40 +146,6 @@ namespace
 		} else {
 			++g_failures;
 			std::printf("  FAIL  %-28s %-7s hr=0x%08X -> %s\n", "clipmap_update",
-				"cs_5_0", static_cast<uint32_t>(hr), path.string().c_str());
-			if (errors) {
-				std::printf("%.*s\n", static_cast<int>(errors->GetBufferSize()),
-					static_cast<const char*>(errors->GetBufferPointer()));
-			}
-		}
-
-		if (code) {
-			code->Release();
-		}
-		if (errors) {
-			errors->Release();
-		}
-	}
-
-	void GenerateShapeAnalysis(const std::filesystem::path& a_outDir)
-	{
-		const std::string source(StampShapes::kAnalysisShader);
-		const auto        path = a_outDir / "stamp_shape_analysis.hlsl";
-		std::ofstream(path) << source;
-
-		ID3DBlob* code = nullptr;
-		ID3DBlob* errors = nullptr;
-
-		const HRESULT hr = D3DCompile(source.c_str(), source.size(), "StampShapeAnalysis",
-			nullptr, nullptr, "main", "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL0, 0, &code,
-			&errors);
-
-		if (SUCCEEDED(hr)) {
-			std::printf("  PASS  %-28s %-7s %6zu bytes -> %s\n", "stamp_shape_analysis",
-				"cs_5_0", code->GetBufferSize(), path.string().c_str());
-		} else {
-			++g_failures;
-			std::printf("  FAIL  %-28s %-7s hr=0x%08X -> %s\n", "stamp_shape_analysis",
 				"cs_5_0", static_cast<uint32_t>(hr), path.string().c_str());
 			if (errors) {
 				std::printf("%.*s\n", static_cast<int>(errors->GetBufferSize()),
@@ -295,7 +230,6 @@ int main(int a_argc, char** a_argv)
 
 	std::printf("Clipmap update pass\n");
 	GenerateCompute(outDir);
-	GenerateShapeAnalysis(outDir);
 
 	std::printf("\nDefault configuration (clipmap, normals, surface material)\n");
 	Generate("colour", ColourSignature(), outDir);
@@ -347,32 +281,6 @@ int main(int a_argc, char** a_argv)
 	Settings::useClipmap = true;
 	Settings::debugWaveAmplitude = 0.0f;
 
-	std::printf("\nActor paint (factor 1, no displacement, COLOR0 tint)\n");
-	Settings::enableActorPaint = true;
-	Settings::debugActorTint = 1.0f;
-	Generate("actor_paint", ActorSignature(), outDir, Tessellation::Mode::kActorPaint);
-
-	std::printf("\nActor paint with the tint off (must be a pure pass-through)\n");
-	Settings::debugActorTint = 0.0f;
-	Generate("actor_plain", ActorSignature(), outDir, Tessellation::Mode::kActorPaint);
-
-	std::printf("\nActor paint on a signature with no TBN\n");
-	Generate("actor_notbn", ActorNoNormalSignature(), outDir, Tessellation::Mode::kActorPaint);
-
-	std::printf("\nActor paint mask debug (DebugPaintMask 3)\n");
-	Settings::debugPaintMask = 3;
-	Generate("actor_maskdebug", ActorSignature(), outDir, Tessellation::Mode::kActorPaint);
-
-	Generate("actor_maskdebug_notbn", ActorNoNormalSignature(), outDir,
-		Tessellation::Mode::kActorPaint);
-
-	std::printf("\nActor coat strength debug (DebugPaintMask 4)\n");
-	Settings::debugPaintMask = 4;
-	Generate("actor_coatdebug", ActorSignature(), outDir, Tessellation::Mode::kActorPaint);
-	Settings::debugPaintMask = 0;
-
-	Settings::enableActorPaint = false;
-
 	std::printf("\nField debug: ramp, bands, and the blend-weight fallback\n");
 	for (int mode = 1; mode <= 3; ++mode) {
 		Settings::debugFieldColour = mode;
@@ -402,24 +310,6 @@ int main(int a_argc, char** a_argv)
 	Settings::snowRaiseHeight = 0.0f;
 	Settings::staticProbeOffset = 0.0f;
 	Settings::enableStaticProbe = false;
-
-	std::printf("\nMesh raise (band below the bound, factor 1)\n");
-	Settings::enableMeshRaise = true;
-	Settings::meshRaiseHeight = 32.0f;
-	Generate("mesh_lit", ColourSignature(), outDir, Tessellation::Mode::kMeshRaise);
-	Generate("mesh_depth", DepthPrepassSignature(), outDir,
-		Tessellation::Mode::kMeshRaise);
-	Generate("mesh_shadow", ShadowMapSignature(), outDir,
-		Tessellation::Mode::kMeshRaise);
-
-	Settings::enableSurfaceMaterial = false;
-	Generate("mesh_nomaterial", ColourSignature(), outDir,
-		Tessellation::Mode::kMeshRaise);
-	Settings::enableSurfaceMaterial = true;
-
-	Settings::meshRaiseHeight = 0.0f;
-	Generate("mesh_zero", ColourSignature(), outDir, Tessellation::Mode::kMeshRaise);
-	Settings::enableMeshRaise = false;
 
 	std::printf("\nCounter-clockwise winding\n");
 	Settings::tessellationWinding = "ccw";

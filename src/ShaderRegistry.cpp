@@ -5,11 +5,13 @@
 
 #include "ShaderRegistry.h"
 #include "Tessellation.h"
+#include "TerrainProcessingGuard.h"
 
 #include <shared_mutex>
 #include <unordered_map>
 
 #include <dxgi.h>
+#include <MinHook.h>
 
 namespace ShaderRegistry
 {
@@ -30,6 +32,37 @@ namespace ShaderRegistry
 		std::unordered_map<ID3D11VertexShader*, std::vector<uint8_t>> g_bytecode;
 
 		bool g_installed{ false };
+		using DrawFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, UINT, UINT);
+		DrawFn g_nativeDraw{};
+		void STDMETHODCALLTYPE NativeDraw(ID3D11DeviceContext* context, UINT count, UINT start)
+		{
+			TerrainProcessingGuard guard(context);
+			g_nativeDraw(context, count, start);
+		}
+		void InstallProcessingGuard(ID3D11DeviceContext* renderer)
+		{
+			if (g_nativeDraw) { return; }
+			ID3D11Device* device{}; renderer->GetDevice(&device);
+			ID3D11DeviceContext* native{};
+			if (device) { device->GetImmediateContext(&native); device->Release(); }
+			if (!native) { logger::error("Terrain processing guard: native context unavailable"); return; }
+			auto** table = *reinterpret_cast<void***>(native);
+			const bool wrapped = table != *reinterpret_cast<void***>(renderer);
+			if (wrapped) {
+				const auto init = MH_Initialize();
+				bool installed{};
+				if (init == MH_OK || init == MH_ERROR_ALREADY_INITIALIZED) {
+					void* target = table[13];
+					if (MH_CreateHook(target, reinterpret_cast<void*>(&NativeDraw), reinterpret_cast<void**>(&g_nativeDraw)) == MH_OK) {
+						installed = MH_EnableHook(target) == MH_OK;
+						if (!installed) { MH_RemoveHook(target); g_nativeDraw = nullptr; }
+					}
+				}
+				if (installed) { logger::info("Terrain processing guard: native Draw hook installed (independent of logging)"); }
+				else { logger::error("Terrain processing guard: native Draw hook installation failed"); }
+			}
+			native->Release();
+		}
 		using SetVSFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11VertexShader*, ID3D11ClassInstance* const*, UINT);
 		SetVSFn g_setVS{};
 		using SetRSFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11RasterizerState*);
@@ -38,11 +71,9 @@ namespace ShaderRegistry
 		{
 			g_setRS(context, Tessellation::RasterizerFor(context, state));
 		}
-		void InstallRasterObserver(ID3D11Device* device)
+		void InstallRasterObserver(ID3D11DeviceContext* context)
 		{
-			if (g_setRS) { return; }
-			ID3D11DeviceContext* context{}; device->GetImmediateContext(&context);
-			if (!context) { return; }
+			if (g_setRS || !context) { return; }
 
 			auto** table = *reinterpret_cast<void***>(context);
 			DWORD protection{};
@@ -51,7 +82,6 @@ namespace ShaderRegistry
 				table[43] = reinterpret_cast<void*>(&SetRS);
 				VirtualProtect(&table[43], sizeof(void*), protection, &protection);
 			} else { logger::error("Terrain blending: raster observer installation failed"); }
-			context->Release();
 		}
 		void STDMETHODCALLTYPE SetVS(ID3D11DeviceContext* context, ID3D11VertexShader* shader,
 			ID3D11ClassInstance* const* classes, UINT count)
@@ -59,12 +89,9 @@ namespace ShaderRegistry
 			g_setVS(context, shader, classes, count);
 			Tessellation::VertexShaderBound(context, shader);
 		}
-		void InstallVSObserver(ID3D11Device* device)
+		void InstallVSObserver(ID3D11DeviceContext* context)
 		{
-			if (g_setVS) { return; }
-			ID3D11DeviceContext* context{};
-			device->GetImmediateContext(&context);
-			if (!context) { return; }
+			if (g_setVS || !context) { return; }
 
 			auto** table = *reinterpret_cast<void***>(context);
 			DWORD protection{};
@@ -73,7 +100,6 @@ namespace ShaderRegistry
 				table[11] = reinterpret_cast<void*>(&SetVS);
 				VirtualProtect(&table[11], sizeof(void*), protection, &protection);
 			} else { logger::error("Terrain blending: VS observer installation failed"); }
-			context->Release();
 		}
 
 		HRESULT STDMETHODCALLTYPE CreateVertexShaderDetour(ID3D11Device* a_self,
@@ -215,10 +241,19 @@ namespace ShaderRegistry
 			reinterpret_cast<void**>(&g_originalCreateDevice));
 	}
 
+	bool InstallContextObservers(ID3D11DeviceContext* a_context)
+	{
+		if (!a_context) { return false; }
+		InstallVSObserver(a_context);
+		InstallRasterObserver(a_context);
+		InstallProcessingGuard(a_context);
+		logger::info("Terrain blending observers: renderer context={} VS installed={} raster installed={}",
+			static_cast<const void*>(a_context), g_setVS != nullptr, g_setRS != nullptr);
+		return g_setVS && g_setRS;
+	}
+
 	bool Install(ID3D11Device* a_device)
 	{
-		if (a_device) { InstallVSObserver(a_device); }
-		if (a_device) { InstallRasterObserver(a_device); }
 		if (g_installed) {
 			return true;
 		}

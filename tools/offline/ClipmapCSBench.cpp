@@ -112,7 +112,13 @@ namespace
 		Require(current.size() > body &&
 					current.compare(current.size() - body, body, Clipmap::kUpdateShader) == 0,
 			"UpdateShaderSource() no longer ends with kUpdateShader");
-		return current.substr(0, current.size() - body) + ClipmapBaseline::kUpdateShader;
+		return current.substr(0, current.size() - body) +
+			"static const float kPrintCoreLo = 0.06f;\n"
+			"static const float kPrintCoreHi = 0.96f;\n"
+			"static const float kPrintBandRiseLo = 0.14f;\n"
+			"static const float kPrintBandRiseHi = 0.34f;\n"
+			"static const float kPrintBandFallLo = 0.52f;\n"
+			"static const float kPrintBandFallHi = 0.84f;\n" + ClipmapBaseline::kUpdateShader;
 	}
 
 	std::string WithoutNeighbourRace(std::string a_source)
@@ -649,7 +655,7 @@ namespace
 
 		void Stamp(Params& a_p, int a_i, Coverage& a_coverage)
 		{
-			const float kind = Chance(0.45f) ? 0.0f : Chance(0.4f) ? 1.0f : 2.0f;
+			const float kind = Chance(0.22f) ? 1.0f : 0.0f;
 			const float region = Chance(0.85f) ? 576.0f : Chance(0.67f) ? 3000.0f : 30000.0f;
 			const float pick = Uniform(0.0f, 1.0f);
 			const float radius = pick < 0.7f ? Uniform(4.0f, 60.0f) : pick < 0.9f ? Uniform(60.0f, 256.0f) :
@@ -673,7 +679,7 @@ namespace
 			const bool straight = Chance(0.2f);
 			a_p.stampShape[a_i][0] = straight ? 0.0f : std::sin(angle);
 			a_p.stampShape[a_i][1] = straight ? 1.0f : std::cos(angle);
-			a_p.stampShape[a_i][2] = kind == 2.0f ? Uniform(2.0f, 40.0f) : (Chance(0.5f) ? 0.0f : Uniform(2.0f, 60.0f));
+			a_p.stampShape[a_i][2] = (Chance(0.5f) ? 0.0f : Uniform(2.0f, 60.0f));
 			a_p.stampShape[a_i][3] = Chance(0.5f) ? 1.0f : -1.0f;
 
 			const float motion = Uniform(0.0f, 1.0f);
@@ -850,7 +856,7 @@ namespace
 		}
 		std::printf("%s %s: %d frames x %u levels, %d differing (worst %zu texels)\n",
 			a_exact ? (differing ? "FAIL" : "PASS") : "INFO", a_name, a_frames, kLevels, differing, worstTexels);
-		std::printf("       stamps: %llu press, %llu press+rim, %llu melt, %llu print (%llu snow, %llu swept); "
+		std::printf("       stamps: %llu press, %llu press+rim, %llu melt, %llu retired kind (%llu snow, %llu swept); "
 					"frames: %d empty, %d full, %d jumps, %d paused, %d fill, %d repose, %d raise, %d ties\n",
 			coverage.kinds[0], coverage.kinds[1], coverage.kinds[2], coverage.kinds[3], coverage.snow,
 			coverage.moving, coverage.emptyFrames, coverage.fullFrames, coverage.jumps, coverage.paused,
@@ -891,10 +897,10 @@ namespace
 		p.raiseWindow[3] = 7936.0f;
 		for (int i = 0; i < a_count; ++i) {
 			float r = 8.0f + 6.0f * unit(rng);
-			float kind = i % 3 == 0 ? 2.0f : 0.0f;
+			float kind = 0.0f;
 			float x = px + close(rng);
 			float y = py + close(rng);
-			float halfWidth = kind > 1.5f ? r * 0.5f : 0.0f;
+			float halfWidth = i % 3 == 0 ? r * 0.5f : 0.0f;
 			float rim = 1.2f * 1.45f * 0.2f;
 			float depth = 6.0f * 0.2f;
 			if ((a_mode == 1 || a_mode == 2) && i < 40) {

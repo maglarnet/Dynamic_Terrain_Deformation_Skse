@@ -10,7 +10,7 @@
 #include "Settings.h"
 #include "ShaderRegistry.h"
 #include "SnowCoverage.h"
-#include "StampShapes.h"
+#include "Shelter.h"
 #include "SurfaceProfiles.h"
 
 namespace
@@ -54,6 +54,9 @@ namespace
 			logger::error("ShaderRegistry: CreateVertexShader not hooked - draws under a "
 						  "replaced vertex shader cannot be resolved");
 		}
+		if (!ShaderRegistry::InstallContextObservers(globals::d3d::context)) {
+			logger::error("Terrain blending: renderer context observers unavailable");
+		}
 		logger::info("ShaderRegistry: {} vertex shader(s) recorded so far, {:.1f} MB of "
 					 "bytecode",
 			ShaderRegistry::Count(),
@@ -67,11 +70,6 @@ namespace
 			logger::error("SnowCoverage unavailable - the snow raise will lift nothing");
 		}
 
-		if (Settings::enableStampShapes) {
-			StampShapes::Initialize();
-
-			StampShapes::RequestAnalysis();
-		}
 
 		Hooks::Install();
 		MagicImpacts::Install();
@@ -113,6 +111,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 			a_msg->type == SKSE::MessagingInterface::kPostLoadGame ||
 			a_msg->type == SKSE::MessagingInterface::kNewGame)) {
 			MagicImpacts::Reset();
+			Clipmap::InvalidateGather();
+			Shelter::InvalidateCPU();
 
 		}
 	});

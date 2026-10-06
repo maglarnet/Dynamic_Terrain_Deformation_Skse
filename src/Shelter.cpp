@@ -15,11 +15,13 @@
 #include "ShelterTransition.h"
 #include "ShelterFadeCells.h"
 #include "ShelterScan.h"
+#include "ShelterProbeCache.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <vector>
+#include <atomic>
 
 namespace Shelter
 {
@@ -46,12 +48,17 @@ namespace Shelter
 		ID3D11SamplerState*       g_sampler{ nullptr };
 		bool                      g_failed{ false };
 		bool                      g_capDirty{ false };
+		bool                      g_capUploadPending{ false };
+		std::atomic<bool>          g_resetRequested{ false };
 
 		std::vector<int32_t> g_filledX;
 		std::vector<int32_t> g_filledY;
 
 		uint32_t g_cursor{ 0 };
 		uint32_t g_ageCursor{ 0 };
+		std::vector<ShelterProbe::LandCell> g_landCache;
+		ShelterProbe::Clock g_probeClock;
+		bool g_probeSettled{ false };
 
 		int32_t  g_centreCellX{ 0 };
 		int32_t  g_centreCellY{ 0 };
@@ -80,6 +87,7 @@ namespace Shelter
 			g_rowSums.assign(total, 0);
 			g_filledX.assign(total, -0x40000000);
 			g_filledY.assign(total, -0x40000000);
+			g_landCache.assign(total, {});
 			g_allocated = true;
 		}
 
@@ -271,9 +279,13 @@ namespace Shelter
 		g_rowSums.clear();
 		g_filledX.clear();
 		g_filledY.clear();
+		g_landCache.clear();
+		g_probeClock = {};
+		g_probeSettled = false;
 		g_allocated = false;
 		g_haveCentre = false;
 		g_dirty = false;
+		g_capUploadPending = false;
 		++g_revision;
 	}
 
@@ -287,6 +299,9 @@ namespace Shelter
 		std::fill(g_filledY.begin(), g_filledY.end(), -0x40000000);
 		g_cursor = 0;
 		g_ageCursor = 0;
+		std::fill(g_landCache.begin(), g_landCache.end(), ShelterProbe::LandCell{});
+		g_probeClock = {};
+		g_probeSettled = false;
 
 		std::fill(g_cap.begin(), g_cap.end(), static_cast<uint8_t>(255));
 		std::fill(g_raw.begin(), g_raw.end(), static_cast<uint8_t>(0));
@@ -294,6 +309,24 @@ namespace Shelter
 		g_transition = true;
 		g_fadeCells.ActivateAll();
 		g_capDirty = true;
+	}
+
+	void ForgetWindow()
+	{
+		Reset();
+		if (!g_allocated) { return; }
+		std::fill(g_smooth.begin(), g_smooth.end(), 0);
+		std::fill(g_roofDisplay.begin(), g_roofDisplay.end(), 0.0f);
+		std::fill(g_roofVisible.begin(), g_roofVisible.end(), 0);
+		std::fill(g_capSmooth.begin(), g_capSmooth.end(), 255);
+		std::fill(g_capDisplay.begin(), g_capDisplay.end(), 255.0f);
+		std::fill(g_capVisible.begin(), g_capVisible.end(), 255);
+		g_fadeCells.Reset(static_cast<uint32_t>(g_raw.size()));
+		g_transition = false;
+		g_haveCentre = false;
+		g_dirty = false;
+		g_capUploadPending = true;
+		++g_revision;
 	}
 
 	uint32_t Revision()
@@ -374,8 +407,14 @@ namespace Shelter
 			baseX, baseY, roof, g_centreCellX, g_centreCellY);
 	}
 
-	void Update()
+	void InvalidateCPU()
 	{
+		g_resetRequested.store(true, std::memory_order_release);
+	}
+
+	void UpdateCPU()
+	{
+		if (g_resetRequested.exchange(false, std::memory_order_acq_rel)) { ForgetWindow(); }
 		if (!Settings::enableShelter || !Settings::enableSnowRaise) {
 			return;
 		}
@@ -388,11 +427,8 @@ namespace Shelter
 
 		Allocate();
 
-		if (Settings::shelterMeshCap) {
-			Initialize();
-		}
-
 		const int64_t started = Profiler::Ticks();
+		Profiler::Tally(Profiler::Count::kShelterCPUUpdates);
 
 		const RE::NiPoint3 position = player->GetPosition();
 
@@ -402,8 +438,10 @@ namespace Shelter
 		g_centreCellX = static_cast<int32_t>(std::floor(position.x / kTexelSize));
 		g_centreCellY = static_cast<int32_t>(std::floor(position.y / kTexelSize));
 
-		if (!g_haveCentre || wasX != g_centreCellX || wasY != g_centreCellY) {
+		const bool moved = !g_haveCentre || wasX != g_centreCellX || wasY != g_centreCellY;
+		if (moved) {
 			++g_revision;
+			g_probeSettled = false;
 		}
 		g_haveCentre = true;
 
@@ -412,8 +450,11 @@ namespace Shelter
 
 		const uint32_t total = static_cast<uint32_t>(g_raw.size());
 
-		const uint32_t aging = static_cast<uint32_t>(std::max(Settings::shelterRefresh, 0));
-		for (uint32_t i = 0; i < aging; ++i) {
+		const bool paused = globals::game::ui && globals::game::ui->GameIsPaused();
+		const float delta = !paused && globals::game::deltaTime ? *globals::game::deltaTime : 0.0f;
+		const auto refresh = g_probeClock.Advance(delta,
+			static_cast<uint32_t>(std::max(Settings::shelterRefresh, 0)), total);
+		for (uint32_t i = 0; i < refresh.cells; ++i) {
 			g_filledX[g_ageCursor] = -0x40000000;
 			g_ageCursor = (g_ageCursor + 1) % total;
 		}
@@ -421,8 +462,11 @@ namespace Shelter
 		const uint32_t budget = static_cast<uint32_t>(std::max(Settings::shelterBudget, 1));
 
 		static uint32_t reportedRays = 0, roofChanges = 0, capChanges = 0;
-		const uint32_t raysPerCell = Settings::shelterMeshCap && Ready() ? 2u : 1u;
-		const auto scan = ShelterScan::Run(g_cursor, total, budget, raysPerCell, [&](uint32_t index) {
+		const uint32_t raysPerCell = Settings::shelterMeshCap && !g_failed ? 2u : 1u;
+		ShelterScan::Counts scan{};
+		uint32_t landQueries = 0, cachedHeights = 0;
+		if (!g_probeSettled || refresh.due) {
+			scan = ShelterScan::Run(g_cursor, total, budget, raysPerCell, [&](uint32_t index) {
 			const uint32_t tx = index & kMask;
 			const uint32_t ty = index / kTexels;
 
@@ -441,10 +485,20 @@ namespace Shelter
 				position.z
 			};
 
+			auto& land = g_landCache[index];
+			if (!land.CanRetry(cellX, cellY, g_probeClock.now)) {
+				return ShelterScan::Result::kCached;
+			}
 			float landZ = 0.0f;
-			if (!tes->GetLandHeight(probe, landZ)) {
-
-				return ShelterScan::Result::kNoLand;
+			if (!land.Get(cellX, cellY, landZ)) {
+				++landQueries;
+				if (!tes->GetLandHeight(probe, landZ)) {
+					land.Miss(cellX, cellY, g_probeClock.now);
+					return ShelterScan::Result::kNoLand;
+				}
+				land.Store(cellX, cellY, landZ);
+			} else {
+				++cachedHeights;
 			}
 
 			const bool occluded = Occluded(tes, probe.x, probe.y, landZ);
@@ -472,13 +526,15 @@ namespace Shelter
 			g_filledY[index] = cellY;
 			return ShelterScan::Result::kUpdated;
 		});
-		Profiler::Tally(Profiler::Count::kShelterLandAttempts, scan.attempts);
+			g_probeSettled = scan.scanned == total;
+		}
+		Profiler::Tally(Profiler::Count::kShelterLandAttempts, landQueries);
+		Profiler::Tally(Profiler::Count::kShelterLandCached, cachedHeights);
 		Profiler::Tally(Profiler::Count::kShelterLandMisses, scan.misses);
 		Profiler::Tally(Profiler::Count::kShelterRays, scan.rays);
 
 		if (g_transition) {
-			const float dt = globals::game::deltaTime ? *globals::game::deltaTime : 0.0f;
-			const float alpha = ShelterTransition::Alpha(dt);
+			const float alpha = ShelterTransition::Alpha(delta);
 			bool pending = false;
 			const auto visited = g_fadeCells.Advance([&](uint32_t i) {
 				bool cellPending = ShelterTransition::Advance(g_roofDisplay[i], g_raw[i], alpha);
@@ -503,21 +559,10 @@ namespace Shelter
 			++g_revision;
 		}
 
-		if (g_capDirty && Ready()) {
+		if (g_capDirty && Settings::shelterMeshCap && !g_failed) {
 			Smooth(g_capVisible, g_capSmooth);
-
-			auto* context = globals::d3d::context;
-			D3D11_MAPPED_SUBRESOURCE mapped{};
-			if (context && SUCCEEDED(context->Map(
-								g_texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-				auto* dst = static_cast<uint8_t*>(mapped.pData);
-				for (uint32_t y = 0; y < kTexels; ++y) {
-					std::memcpy(dst + static_cast<size_t>(y) * mapped.RowPitch,
-						g_capSmooth.data() + static_cast<size_t>(y) * kTexels, kTexels);
-				}
-				context->Unmap(g_texture, 0);
-				g_capDirty = false;
-			}
+			g_capDirty = false;
+			g_capUploadPending = true;
 		}
 
 		reportedRays += scan.rays;
@@ -532,5 +577,27 @@ namespace Shelter
 			reportAt = now;
 		}
 		Profiler::AddCpuTicks(Profiler::CpuScope::kShelter, Profiler::Ticks() - started);
+	}
+
+	void Upload()
+	{
+		if (g_resetRequested.exchange(false, std::memory_order_acq_rel)) { ForgetWindow(); }
+		if (!Settings::enableShelter || !Settings::enableSnowRaise || !Settings::shelterMeshCap) { return; }
+		const auto started = Profiler::Ticks();
+		if (Initialize() && g_capUploadPending) {
+			auto* context = globals::d3d::context;
+			D3D11_MAPPED_SUBRESOURCE mapped{};
+			if (context && SUCCEEDED(context->Map(g_texture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+				auto* dst = static_cast<uint8_t*>(mapped.pData);
+				for (uint32_t y = 0; y < kTexels; ++y) {
+					std::memcpy(dst + static_cast<size_t>(y) * mapped.RowPitch,
+						g_capSmooth.data() + static_cast<size_t>(y) * kTexels, kTexels);
+				}
+				context->Unmap(g_texture, 0);
+				g_capUploadPending = false;
+				Profiler::Tally(Profiler::Count::kShelterUploads);
+			}
+		}
+		Profiler::AddCpuTicks(Profiler::CpuScope::kShelterUpload, Profiler::Ticks() - started);
 	}
 }

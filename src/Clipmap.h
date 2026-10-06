@@ -60,7 +60,6 @@ namespace Clipmap
 
 			kMelt,
 
-			kPrint,
 		};
 
 		float x{ 0.0f };
@@ -80,7 +79,6 @@ namespace Clipmap
 		float forwardY{ 1.0f };
 		float halfWidth{ 0.0f };
 
-		float mirror{ 1.0f };
 
 		float motionX{ 0.0f };
 		float motionY{ 0.0f };
@@ -94,6 +92,9 @@ namespace Clipmap
 	bool Ready();
 
 	void Update(float a_deltaSeconds);
+	void GatherFrame(float a_deltaSeconds);
+	void InstallActorCacheEvents();
+	void InvalidateGather();
 
 	void ForgetWindow();
 

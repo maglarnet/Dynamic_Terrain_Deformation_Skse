@@ -9,12 +9,12 @@ set(BUILD_TESTS      OFF CACHE BOOL "" FORCE)
 set(SKSE_SUPPORT_XBYAK ON CACHE BOOL "" FORCE)
 
 add_subdirectory(extern/CommonLibSSE-NG CommonLibSSE EXCLUDE_FROM_ALL)
+add_subdirectory(extern/minhook EXCLUDE_FROM_ALL)
 
 add_library(${PROJECT_NAME} SHARED)
 
 target_sources(${PROJECT_NAME} PRIVATE
     src/plugin.cpp
-    src/ActorPaint.cpp
     src/BloodDecals.cpp
     src/ActorShapes.cpp
     src/Clipmap.cpp
@@ -31,7 +31,6 @@ target_sources(${PROJECT_NAME} PRIVATE
     src/SnowSparkle.cpp
     src/SnowSurface.cpp
     src/SurfaceProfiles.cpp
-    src/StampShapes.cpp
     src/Settings.cpp
     src/SurfaceTypes.cpp
     src/Tessellation.cpp
@@ -46,10 +45,17 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 target_precompile_headers(${PROJECT_NAME} PRIVATE include/PCH.h)
 
+option(TERRAIN_PROFILE_SYMBOLS "Emit PDB symbols without changing Release optimization" OFF)
+if(MSVC AND TERRAIN_PROFILE_SYMBOLS)
+    target_compile_options(${PROJECT_NAME} PRIVATE /Zi)
+    target_link_options(${PROJECT_NAME} PRIVATE /DEBUG:FULL /OPT:REF /OPT:ICF /INCREMENTAL:NO)
+endif()
+
 find_package(directxtk CONFIG REQUIRED)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     CommonLibSSE
+    minhook
     Microsoft::DirectXTK
     d3d11.lib
     bcrypt.lib
@@ -72,14 +78,35 @@ if(BUILD_OFFLINE_TOOLS)
     target_link_libraries(ShaderGen PRIVATE d3dcompiler.lib dxguid.lib bcrypt.lib)
 
     add_executable(StampSurfaceTest tools/offline/StampSurfaceTest.cpp)
+    add_executable(TerrainProcessingGuardTest tools/offline/TerrainProcessingGuardTest.cpp)
+    target_include_directories(TerrainProcessingGuardTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(TerrainProcessingGuardTest PRIVATE cxx_std_23)
+    target_link_libraries(TerrainProcessingGuardTest PRIVATE d3d11.lib d3dcompiler.lib)
     target_include_directories(StampSurfaceTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_features(StampSurfaceTest PRIVATE cxx_std_23)
+    target_compile_definitions(StampSurfaceTest PRIVATE TERRAIN_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/offline/fixtures")
     target_link_libraries(StampSurfaceTest PRIVATE d3d11.lib d3dcompiler.lib bcrypt.lib)
+
+    add_executable(LandscapeSamplingTest EXCLUDE_FROM_ALL tools/offline/LandscapeSamplingTest.cpp)
+    target_compile_features(LandscapeSamplingTest PRIVATE cxx_std_23)
+    target_link_libraries(LandscapeSamplingTest PRIVATE d3d11.lib d3dcompiler.lib)
 
     add_executable(ClipmapCSBench EXCLUDE_FROM_ALL tools/offline/ClipmapCSBench.cpp)
     target_include_directories(ClipmapCSBench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_features(ClipmapCSBench PRIVATE cxx_std_23)
     target_link_libraries(ClipmapCSBench PRIVATE d3d11.lib d3dcompiler.lib)
+
+    add_executable(RoutingBench tools/offline/RoutingBench.cpp)
+    target_include_directories(RoutingBench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(RoutingBench PRIVATE cxx_std_23)
+
+    add_executable(ActorGatherBench tools/offline/ActorGatherBench.cpp)
+    target_include_directories(ActorGatherBench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(ActorGatherBench PRIVATE cxx_std_23)
+
+    add_executable(CoverageQueueBench tools/offline/CoverageQueueBench.cpp)
+    target_include_directories(CoverageQueueBench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(CoverageQueueBench PRIVATE cxx_std_23)
 endif()
 
 if(DEFINED ENV{SKYRIM_FOLDER} AND IS_DIRECTORY "$ENV{SKYRIM_FOLDER}/Data")

@@ -8,6 +8,7 @@ namespace BloodDecals
 {
 	void Update();
 	void Reset();
+	bool MayContain(RE::BSGeometry* geometry);
 	bool Contains(RE::BSGeometry* geometry);
 	void NoteDraw(bool routed);
 }

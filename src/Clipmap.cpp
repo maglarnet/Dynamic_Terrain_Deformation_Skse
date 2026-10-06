@@ -4,6 +4,9 @@
 #include "PCH.h"
 
 #include "ActorShapes.h"
+#include "ActorCollisionCachePolicy.h"
+#include "GatherSnapshotPolicy.h"
+#include "CollisionTraversal.h"
 #include "Clipmap.h"
 
 #include "ClipmapUpdateCS.h"
@@ -17,7 +20,6 @@
 #include "Shelter.h"
 #include "SnowCoverage.h"
 #include "SnowSparkle.h"
-#include "StampShapes.h"
 #include "SurfaceProfiles.h"
 #include "SurfaceTypes.h"
 #include "Weather.h"
@@ -28,6 +30,9 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <unordered_set>
+#include <chrono>
 
 namespace Clipmap
 {
@@ -326,41 +331,6 @@ namespace Clipmap
 
 		std::atomic<uint32_t> g_surfacesLogged{ 0 };
 
-		std::atomic<uint32_t> g_sizesLogged{ 0 };
-		constexpr uint32_t    kMaxSizesLogged = 4;
-
-		void LogStampSize(const Stamp& a_stamp)
-		{
-			if (!Settings::logStampShape || a_stamp.kind != Stamp::Kind::kPrint) {
-				return;
-			}
-			if (g_sizesLogged.load() >= kMaxSizesLogged ||
-				g_sizesLogged.fetch_add(1) >= kMaxSizesLogged) {
-				return;
-			}
-
-			const float length = a_stamp.radius * 2.0f;
-			const float width = a_stamp.halfWidth * 2.0f;
-
-			const float vertexSpacing = std::max(Settings::tessellationTargetSpacing, 0.01f);
-
-			logger::info("Print size: {:.1f} x {:.1f} world units | {:.0f} x {:.0f} field "
-						 "texels at {:.2f}/cell | about {:.1f} x {:.1f} GENERATED VERTICES "
-						 "at spacing {:.1f}",
-				length, width, length / kCellSize, width / kCellSize, kCellSize,
-				length / vertexSpacing, width / vertexSpacing,
-				Settings::tessellationTargetSpacing);
-
-			if (length / vertexSpacing < 8.0f) {
-				logger::warn("  that is too few vertices to carry a silhouette - the mark "
-							 "will read as a smooth blob whatever the mask contains. The "
-							 "field holds {:.0f}x more detail than the geometry samples. "
-							 "Lower TessellationTargetSpacing (and raise "
-							 "TessellationMaxFactor with it, or the cap just clamps it "
-							 "back).",
-					vertexSpacing / kCellSize);
-			}
-		}
 
 		std::atomic<uint32_t> g_feetLogged{ 0 };
 		constexpr uint32_t    kMaxFeetLogged = 40;
@@ -438,6 +408,99 @@ namespace Clipmap
 			g_actorMotion[a_form] = { a_position.x, a_position.y, g_actorFrame };
 		}
 
+		std::unordered_map<RE::FormID, bool> g_bootedRaces;
+		struct CachedCollision
+		{
+			RE::NiPointer<RE::NiAVObject> owner;
+			RE::NiPointer<RE::bhkNiCollisionObject> collision;
+		};
+		struct ActorCollisionEntry
+		{
+			RE::ActorHandle handle;
+			RE::NiPointer<RE::NiAVObject> root;
+			std::vector<CachedCollision> collisions;
+			double nextAudit{};
+			uint64_t seen{};
+			bool ragdoll{};
+		};
+		std::unordered_map<RE::FormID, ActorCollisionEntry> g_actorCollisions;
+		double g_actorClock{};
+		uint32_t g_cacheHits{}, g_cacheBuilds{}, g_collisionReads{};
+		std::atomic<uint64_t> g_gatherGeneration{1};
+		std::atomic<bool> g_clearGather{false};
+		std::mutex g_actorInvalidationLock;
+		std::unordered_set<RE::FormID> g_dirtyActors;
+		GatherSnapshotPolicy::State g_snapshot;
+		int64_t g_gatherTicks{};
+		std::chrono::steady_clock::time_point g_gatherTime{};
+		struct SparkleContact
+		{
+			Surfaces::Type surface;
+			RE::NiPoint3 position;
+			float forwardX, forwardY, velocityX, velocityY;
+		};
+		std::vector<SparkleContact> g_frameContacts;
+
+		GatherSnapshotPolicy::Identity GatherIdentity()
+		{
+			auto* player = globals::game::player;
+			auto* cell = player ? player->GetParentCell() : nullptr;
+			auto* world = player && cell && !cell->IsInteriorCell() ? player->GetWorldspace() : nullptr;
+			return {g_gatherGeneration.load(std::memory_order_acquire),
+				world ? world->GetFormID() : 0, cell ? cell->GetFormID() : 0,
+				reinterpret_cast<std::uintptr_t>(player ? player->Get3D(false) : nullptr)};
+		}
+
+		const std::vector<CachedCollision>& ActorCollisions(RE::Actor* actor, RE::NiAVObject* root)
+		{
+			auto& entry = g_actorCollisions[actor->GetFormID()];
+			const auto handle = actor->GetHandle();
+			const bool ragdoll = actor->IsInRagdollState();
+			bool attached = true;
+			if (entry.root.get() == root) {
+				for (const auto& item : entry.collisions) {
+					if (item.owner->collisionObject.get() != item.collision.get() ||
+						!ActorCollisionCachePolicy::Attached(item.owner.get(), root)) {
+						attached = false;
+						break;
+					}
+				}
+			}
+			if (ActorCollisionCachePolicy::Rebuild(entry.root != nullptr, entry.handle == handle,
+				entry.root.get() == root, entry.ragdoll == ragdoll, attached,
+				g_actorClock, entry.nextAudit)) {
+				entry.collisions.clear();
+				entry.root.reset(root);
+				entry.handle = handle;
+				entry.ragdoll = ragdoll;
+				const auto collect = [&entry](RE::bhkNiCollisionObject* collision, RE::NiAVObject* owner) {
+					entry.collisions.push_back({RE::NiPointer<RE::NiAVObject>(owner),
+						RE::NiPointer<RE::bhkNiCollisionObject>(collision)});
+					return false;
+				};
+				CollisionTraversal::VisitOwned<RE::bhkNiCollisionObject>(root, collect);
+				entry.nextAudit = g_actorClock + ActorCollisionCachePolicy::AuditSeconds +
+					static_cast<double>(actor->GetFormID() % 17) / 100.0;
+				++g_cacheBuilds;
+			} else {
+				++g_cacheHits;
+			}
+			entry.seen = g_actorFrame;
+			return entry.collisions;
+		}
+
+		bool RaceIsBooted(RE::TESRace* race)
+		{
+			if (!race) { return false; }
+			const auto id = race->GetFormID();
+			if (const auto found = g_bootedRaces.find(id); found != g_bootedRaces.end()) {
+				return found->second;
+			}
+			const bool booted = race->HasKeywordString(Settings::stampShapeKeyword);
+			g_bootedRaces.emplace(id, booted);
+			return booted;
+		}
+
 		void AppendActorStamps(RE::Actor* a_actor, const RE::NiPoint3& a_eye,
 			float a_maxDistanceSq, std::vector<Stamp>& a_out)
 		{
@@ -494,45 +557,36 @@ namespace Clipmap
 				RE::NiPoint3 velocity{};
 				a_actor->GetLinearVelocity(velocity);
 
-				SnowSparkle::NoteContact(
-					surface, position, forward.x, forward.y, velocity.x, velocity.y, 18.0f);
+				g_frameContacts.push_back({surface, position, forward.x, forward.y, velocity.x, velocity.y});
 			}
 
-			const bool booted =
-				a_actor->GetRace() &&
-				a_actor->GetRace()->HasKeywordString(Settings::stampShapeKeyword);
-
-			const bool printed =
-				Settings::enableStampShapes && StampShapes::Ready() &&
-				response.print >= 0.5f && booted;
-
-			const bool oriented = Settings::stampFootShape && booted;
+			const bool oriented = Settings::stampFootShape && RaceIsBooted(a_actor->GetRace());
 
 			auto* const tes = RE::TES::GetSingleton();
 
 			const float clearance =
 				Settings::stampGroundClearance * std::max(response.clearanceScale, 0.0f);
 
-			const auto visitCollision = [&](RE::bhkNiCollisionObject* a_object) -> RE::BSVisit::BSVisitControl {
+			const auto visitCollision = [&](RE::bhkNiCollisionObject* a_object) -> bool {
 					if (a_out.size() >= kMaxStamps) {
-						return RE::BSVisit::BSVisitControl::kStop;
+						return true;
 					}
 
 					RE::NiPoint3 centre;
 					float        radius = 0.0f;
 					if (!ActorShapes::GetBound(a_object, centre, radius) || radius <= 0.0f) {
-						return RE::BSVisit::BSVisitControl::kContinue;
+						return false;
 					}
 
 					if (centre.z - radius > feetZ + reach) {
-						return RE::BSVisit::BSVisitControl::kContinue;
+						return false;
 					}
 
 					if (clearance > 0.0f && tes) {
 						float landZ = 0.0f;
 						if (tes->GetLandHeight(centre, landZ) &&
 							(centre.z - radius) - landZ > clearance) {
-							return RE::BSVisit::BSVisitControl::kContinue;
+							return false;
 						}
 					}
 
@@ -542,7 +596,7 @@ namespace Clipmap
 					stamp.y = centre.y;
 					stamp.radius = radius * Settings::stampRadiusScale * response.radiusScale;
 
-					if (printed || oriented) {
+					if (oriented) {
 						const RE::NiPoint3 offset{ centre.x - position.x,
 							centre.y - position.y, 0.0f };
 						const float side = offset.Dot(right);
@@ -557,10 +611,6 @@ namespace Clipmap
 
 						if (isFoot) {
 
-							if (printed) {
-								stamp.kind = Stamp::Kind::kPrint;
-								stamp.mirror = side < 0.0f ? -1.0f : 1.0f;
-							}
 
 							stamp.forwardX = forward.x;
 							stamp.forwardY = forward.y;
@@ -582,20 +632,23 @@ namespace Clipmap
 
 					stamp.rim = Surfaces::RimHeight(ordinary, response.rimScale);
 
-					if (stamp.kind != Stamp::Kind::kPrint) {
-						stamp.motionX = motionX;
-						stamp.motionY = motionY;
-					}
+					stamp.motionX = motionX;
+					stamp.motionY = motionY;
 
-					LogStampSize(stamp);
 					a_out.push_back(stamp);
 
-					return RE::BSVisit::BSVisitControl::kContinue;
+					return false;
 				};
-			RE::BSVisit::TraverseScenegraphCollision(root, std::cref(visitCollision));
+			for (const auto& item : ActorCollisions(a_actor, root)) {
+				++g_collisionReads;
+				if (visitCollision(item.collision.get())) { break; }
+			}
 		}
 
-		std::vector<Stamp> GatherStamps(float a_deltaSeconds)
+		std::vector<Stamp> g_frameStamps;
+		std::vector<RE::ActorPtr> g_frameActors;
+
+		const std::vector<Stamp>& GatherStamps(float a_deltaSeconds)
 		{
 			++g_actorFrame;
 
@@ -604,7 +657,8 @@ namespace Clipmap
 															   std::next(it);
 			}
 
-			std::vector<Stamp> stamps;
+			auto& stamps = g_frameStamps;
+			stamps.clear();
 			stamps.reserve(kMaxStamps);
 
 			RE::NiPoint3 anchor{};
@@ -612,7 +666,8 @@ namespace Clipmap
 				anchor = player->GetPosition();
 			}
 
-			std::vector<RE::ActorPtr> actors;
+			auto& actors = g_frameActors;
+			actors.clear();
 			MagicImpacts::Append(anchor, stamps);
 			CollectActors(actors);
 			if (actors.empty()) {
@@ -639,13 +694,92 @@ namespace Clipmap
 
 			ObjectStamps::Append(a_deltaSeconds, anchor, stamps);
 
+			actors.clear();
 			return stamps;
+		}
+	}
+
+	void InvalidateGather()
+	{
+		g_clearGather.store(true, std::memory_order_release);
+		g_gatherGeneration.fetch_add(1, std::memory_order_acq_rel);
+	}
+
+	void GatherFrame(float a_deltaSeconds)
+	{
+		const auto started = Profiler::Ticks();
+		const auto identity = GatherIdentity();
+		const auto now = std::chrono::steady_clock::now();
+		if (g_snapshot.ready && g_snapshot.identity == identity &&
+			now - g_gatherTime < std::chrono::milliseconds(250) &&
+			!g_clearGather.load(std::memory_order_acquire)) { return; }
+		if (g_clearGather.exchange(false, std::memory_order_acq_rel)) {
+			g_actorCollisions.clear();
+			g_actorMotion.clear();
+			g_snapshot.Reset();
+		}
+		static std::unordered_set<RE::FormID> dirty;
+		{
+			std::lock_guard guard(g_actorInvalidationLock);
+			dirty.swap(g_dirtyActors);
+		}
+		for (auto id : dirty) {
+			g_actorCollisions.erase(id);
+			g_actorMotion.erase(id);
+		}
+		dirty.clear();
+		g_snapshot.Reset();
+		g_frameContacts.clear();
+		g_cacheHits = g_cacheBuilds = g_collisionReads = 0;
+		g_actorClock = ActorCollisionCachePolicy::Advance(g_actorClock, a_deltaSeconds);
+		GatherStamps(a_deltaSeconds);
+		for (auto it = g_actorCollisions.begin(); it != g_actorCollisions.end();) {
+			it = it->second.seen != g_actorFrame ? g_actorCollisions.erase(it) : std::next(it);
+		}
+		g_snapshot.Publish(identity);
+		g_gatherTime = now;
+		g_gatherTicks = Profiler::Ticks() - started;
+	}
+
+	void InstallActorCacheEvents()
+	{
+		struct Events final : RE::BSTEventSink<RE::TESEquipEvent>, RE::BSTEventSink<RE::TESObjectLoadedEvent>
+		{
+			void Dirty(RE::FormID id)
+			{
+				std::lock_guard guard(g_actorInvalidationLock);
+				if (g_dirtyActors.size() < 4096) { g_dirtyActors.insert(id); }
+				else { InvalidateGather(); }
+			}
+			RE::BSEventNotifyControl ProcessEvent(const RE::TESEquipEvent* event,
+				RE::BSTEventSource<RE::TESEquipEvent>*) override
+			{
+				if (event && event->actor) { Dirty(event->actor->GetFormID()); }
+				return RE::BSEventNotifyControl::kContinue;
+			}
+			RE::BSEventNotifyControl ProcessEvent(const RE::TESObjectLoadedEvent* event,
+				RE::BSTEventSource<RE::TESObjectLoadedEvent>*) override
+			{
+				if (event && RE::TESForm::LookupByID<RE::Actor>(event->formID)) { Dirty(event->formID); }
+				return RE::BSEventNotifyControl::kContinue;
+			}
+		};
+		static Events events;
+		static bool installed = false;
+		if (!installed) {
+			if (auto* source = RE::ScriptEventSourceHolder::GetSingleton()) {
+				source->AddEventSink<RE::TESEquipEvent>(&events);
+				source->AddEventSink<RE::TESObjectLoadedEvent>(&events);
+				installed = true;
+				logger::info("Actor collision cache equipment/load invalidation installed");
+			}
 		}
 	}
 
 	void ResetDiagnostics()
 	{
-		g_sizesLogged.store(0);
+		InvalidateGather();
+		g_bootedRaces.clear();
 		g_surfacesLogged.store(0);
 		g_feetLogged.store(0);
 	}
@@ -774,9 +908,27 @@ namespace Clipmap
 		const float dt = std::clamp(a_deltaSeconds, 0.0f, 0.25f);
 		params.control[0] = dt;
 
-		const int64_t gatherStart = Profiler::Ticks();
-		const auto    stamps = GatherStamps(a_deltaSeconds);
-		Profiler::AddCpuTicks(Profiler::CpuScope::kGatherStamps, Profiler::Ticks() - gatherStart);
+		const auto handoffStarted = Profiler::Ticks();
+		const bool pending = g_snapshot.ready;
+		const bool fresh = std::chrono::steady_clock::now() - g_gatherTime < std::chrono::milliseconds(250);
+		const bool matches = g_snapshot.Consume(GatherIdentity());
+		const bool prepared = matches && fresh;
+		Profiler::Tally(prepared ? Profiler::Count::kGatherPrepared :
+			pending ? Profiler::Count::kGatherRejected : Profiler::Count::kGatherEmpty);
+		if (!prepared) { g_frameStamps.clear(); g_frameContacts.clear(); }
+		const auto& stamps = g_frameStamps;
+		if (prepared) {
+			Profiler::AddCpuTicks(Profiler::CpuScope::kGatherStamps, g_gatherTicks);
+			Profiler::Tally(Profiler::Count::kActorCacheHits, g_cacheHits);
+			Profiler::Tally(Profiler::Count::kActorCacheBuilds, g_cacheBuilds);
+			Profiler::Tally(Profiler::Count::kActorCollisionReads, g_collisionReads);
+			for (const auto& contact : g_frameContacts) {
+				SnowSparkle::NoteContact(contact.surface, contact.position, contact.forwardX,
+					contact.forwardY, contact.velocityX, contact.velocityY, 18.0f);
+			}
+		}
+		g_frameContacts.clear();
+		Profiler::AddCpuTicks(Profiler::CpuScope::kGatherHandoff, Profiler::Ticks() - handoffStarted);
 		const uint32_t count = std::min<uint32_t>(static_cast<uint32_t>(stamps.size()), kMaxStamps);
 		params.control[1] = static_cast<float>(count);
 
@@ -831,7 +983,7 @@ namespace Clipmap
 			params.stampShape[i][0] = stamps[i].forwardX;
 			params.stampShape[i][1] = stamps[i].forwardY;
 			params.stampShape[i][2] = stamps[i].halfWidth;
-			params.stampShape[i][3] = stamps[i].mirror;
+			params.stampShape[i][3] = 0.0f;
 
 			params.stampMotion[i][0] = stamps[i].motionX;
 			params.stampMotion[i][1] = stamps[i].motionY;
@@ -899,8 +1051,6 @@ namespace Clipmap
 			const UINT noOffset[3] = { static_cast<UINT>(-1), static_cast<UINT>(-1),
 				static_cast<UINT>(-1) };
 
-			ID3D11ShaderResourceView* shape = StampShapes::View();
-			context->CSSetShaderResources(0, 1, &shape);
 
 			ID3D11ShaderResourceView* floorMaps[2] = {
 				params.raise[0] > 0.0f ? SnowCoverage::View() : nullptr,
@@ -992,10 +1142,16 @@ namespace Clipmap
 		}
 	}
 
-	// Called while Update is skipped (indoors): the next Update reseeds every level as a
 	// window jump does, and actor motion starts fresh instead of from before the skip.
 	void ForgetWindow()
 	{
+		InvalidateGather();
+		g_snapshot.Reset();
+		g_frameStamps.clear();
+		g_frameContacts.clear();
+		g_actorCollisions.clear();
+		g_windowValid = false;
+		g_bootedRaces.clear();
 		for (auto& valid : g_prevWindowValid) {
 			valid = false;
 		}

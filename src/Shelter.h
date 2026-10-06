@@ -31,9 +31,12 @@ namespace Shelter
 
 	void Shutdown();
 
-	void Update();
+	void UpdateCPU();
+	void Upload();
+	void InvalidateCPU();
 
 	void Reset();
+	void ForgetWindow();
 
 	uint32_t Revision();
 

@@ -3,6 +3,7 @@
 
 #include "PCH.h"
 #include "BoxFilter.h"
+#include "CoverageWorkQueue.h"
 #include <chrono>
 
 #include "Globals.h"
@@ -42,14 +43,13 @@ namespace SnowCoverage
 		std::vector<int32_t> g_filledX;
 		std::vector<int32_t> g_filledY;
 
-		uint32_t g_cursor{ 0 };
+		CoverageWorkQueue::Grid<kTexels> g_work;
+		std::vector<double> g_retryAt;
+		double g_retryTime{};
 
 		int32_t g_centreCellX{ 0 };
 		int32_t g_centreCellY{ 0 };
 
-		int32_t g_settledCellX{ 0 };
-		int32_t g_settledCellY{ 0 };
-		bool    g_settledValid{ false };
 		bool    g_dirty{ false };
 		bool    g_everFilled{ false };
 
@@ -81,7 +81,9 @@ namespace SnowCoverage
 		}
 
 		g_coverage.assign(static_cast<size_t>(kTexels) * kTexels, 0);
-		g_settledValid = false;
+		g_work.Reset();
+		g_retryAt.assign(g_coverage.size(), 0.0);
+		g_retryTime = 0.0;
 		g_smooth.assign(g_coverage.size(), 0);
 		g_upload.assign(g_coverage.size(), 0);
 		g_rowSums.assign(g_coverage.size(), 0);
@@ -145,10 +147,20 @@ namespace SnowCoverage
 	{
 		std::fill(g_filledX.begin(), g_filledX.end(), -0x40000000);
 		std::fill(g_filledY.begin(), g_filledY.end(), -0x40000000);
-		g_cursor = 0;
+		g_work.Reset();
+		std::fill(g_retryAt.begin(), g_retryAt.end(), 0.0);
+		g_retryTime = 0.0;
 		g_everFilled = false;
 		g_reportedComplete = false;
-		g_settledValid = false;
+	}
+
+	void ForgetWindow()
+	{
+		Reset();
+		std::fill(g_coverage.begin(), g_coverage.end(), 0);
+		std::fill(g_smooth.begin(), g_smooth.end(), 0);
+		std::fill(g_upload.begin(), g_upload.end(), 0);
+		g_dirty = true;
 	}
 
 	namespace
@@ -210,8 +222,11 @@ namespace SnowCoverage
 
 		const uint32_t shelterRevision = Shelter::Revision();
 		const bool     shelterMoved = shelterRevision != g_shelterRevision;
-		const bool     settledHere = g_settledValid &&
-			g_settledCellX == g_centreCellX && g_settledCellY == g_centreCellY;
+		const bool paused = globals::game::ui && globals::game::ui->GameIsPaused();
+		const float delta = !paused && globals::game::deltaTime ? *globals::game::deltaTime : 0.0f;
+		if (std::isfinite(delta)) { g_retryTime += std::clamp(delta, 0.0f, 0.1f); }
+		g_work.Move(g_centreCellX, g_centreCellY, [](uint32_t index) { g_retryAt[index] = 0.0; });
+		const bool settledHere = g_work.Count() == 0;
 
 		if (!g_dirty && !shelterMoved && settledHere) {
 			Profiler::AddCpuTicks(Profiler::CpuScope::kSnowCoverage,
@@ -224,13 +239,12 @@ namespace SnowCoverage
 
 		uint32_t       queries = 0;
 		uint32_t       scanned = 0;
-		const uint32_t total = static_cast<uint32_t>(g_coverage.size());
 
-		const bool sweep = !settledHere || g_dirty;
-
-		while (sweep && queries < budget && scanned < total) {
-			const uint32_t index = g_cursor;
-			g_cursor = (g_cursor + 1) % total;
+		const uint32_t scanLimit = std::min(g_work.Count(), budget);
+		auto* tes = RE::TES::GetSingleton();
+		uint32_t misses = 0;
+		while (scanned < scanLimit) {
+			const uint32_t index = g_work.Pop();
 			++scanned;
 
 			const uint32_t tx = index & kMask;
@@ -245,6 +259,7 @@ namespace SnowCoverage
 				continue;
 			}
 
+			if (g_retryTime < g_retryAt[index]) { g_work.Push(index); continue; }
 			RE::NiPoint3 probe{
 				(static_cast<float>(cellX) + 0.5f) * kTexelSize,
 				(static_cast<float>(cellY) + 0.5f) * kTexelSize,
@@ -253,9 +268,10 @@ namespace SnowCoverage
 
 			++queries;
 			float landZ = 0.0f;
-			auto* tes = RE::TES::GetSingleton();
 			if (!tes || !tes->GetLandHeight(probe, landZ)) {
-
+				++misses;
+				g_retryAt[index] = g_retryTime + 0.5;
+				g_work.Push(index);
 				continue;
 			}
 
@@ -267,11 +283,12 @@ namespace SnowCoverage
 			g_dirty = true;
 		}
 
-		if (sweep && scanned >= total && queries == 0) {
-			g_settledValid = true;
-			g_settledCellX = g_centreCellX;
-			g_settledCellY = g_centreCellY;
-		}
+		Profiler::Tally(Profiler::Count::kCoverageLandQueries, queries);
+		Profiler::Tally(Profiler::Count::kCoverageLandMisses, misses);
+		Profiler::Tally(Profiler::Count::kCoveragePending, g_work.Count());
+		const bool complete = g_work.Count() == 0;
+		const bool firstComplete = complete && !g_everFilled;
+		if (complete) { g_everFilled = true; }
 
 		if (g_dirty || shelterMoved) {
 
@@ -306,9 +323,8 @@ namespace SnowCoverage
 		using Clock = std::chrono::steady_clock;
 		static Clock::time_point backlogSince{};
 		static bool warned{};
-		const bool complete = scanned >= total && queries < budget;
 		if (complete) {
-			if (!g_everFilled || warned) {
+			if (firstComplete || warned) {
 				logger::info("SnowCoverage: swept clean at {} units a texel", kTexelSize);
 			}
 			g_reportedComplete = true;

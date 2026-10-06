@@ -16,6 +16,7 @@
 #include "TerrainBlendDiagnostics.h"
 #include "TerrainDepthBias.h"
 #include "TerrainCulling.h"
+#include "TerrainProcessingGuard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -69,7 +70,6 @@ namespace Tessellation
 				Settings::tessellationMaxFactor, Settings::tessellationTargetSpacing,
 				Settings::tessellationRaiseSpacing,
 				a_mode == Mode::kStaticProbe ? Settings::staticProbeOffset :
-				a_mode == Mode::kMeshRaise   ? Settings::meshRaiseHeight :
 					Settings::debugWorldZOffset,
 				Settings::debugWaveAmplitude,
 				Settings::debugWaveLength, Settings::normalGradientEpsilon);
@@ -80,7 +80,7 @@ namespace Tessellation
 				blanket ? Settings::tessellationBlanketSpacing : 0.0f);
 			out += BlanketTessellation::source;
 
-			if (Settings::enableSurfaceMaterial || a_mode == Mode::kMeshRaise) {
+			if (Settings::enableSurfaceMaterial) {
 				out += std::format(
 					"cbuffer SurfaceMaterial : register(b{})\n"
 					"{{\n"
@@ -91,33 +91,6 @@ namespace Tessellation
 					"\tfloat4 Material;\n"
 					"}};\n\n",
 					kMaterialSlot);
-			}
-
-			if (a_mode == Mode::kActorPaint) {
-				out += std::format(
-					"cbuffer ActorPaint : register(b{})\n"
-					"{{\n"
-					"\t\n"
-					"\tfloat4 Coat;\n"
-					"\t\n"
-					"\t\n"
-					"\tfloat4 CoatParams;\n"
-					"\t\n"
-					"\t\n"
-					"\t\n"
-					"\tfloat4 CoatAngles;\n"
-					"}};\n\n",
-					kActorPaintSlot);
-
-				out +=
-					"float CoatBand(float worldZ)\n"
-					"{\n"
-					"\tif (CoatParams.y <= 0.0f) {\n"
-					"\t\treturn 1.0f;\n"
-					"\t}\n\n"
-					"\tconst float above = (worldZ - CoatParams.x) / CoatParams.y;\n\n"
-					"\treturn 1.0f - smoothstep(CoatAngles.w, 1.0f, above);\n"
-					"}\n\n";
 			}
 
 			out +=
@@ -137,11 +110,10 @@ namespace Tessellation
 
 				const bool field = a_mode == Mode::kLandscape || a_mode == Mode::kBloodDecal;
 
-				const char* const lift = a_mode == Mode::kMeshRaise ?
-					"\tfloat  d  = MeshRaise(worldPosition);\n" :
+				const char* const lift =
 					"\tfloat  d  = kLift;\n";
 
-				if (Settings::useClipmap && (field || a_mode == Mode::kMeshRaise)) {
+				if (Settings::useClipmap && field) {
 
 					const bool coarse = Clipmap::LevelCount() > 1;
 
@@ -176,7 +148,7 @@ namespace Tessellation
 				}
 
 				const bool raising =
-					(field || a_mode == Mode::kMeshRaise) &&
+					field &&
 					Settings::enableSnowRaise && Settings::useClipmap &&
 					Settings::snowRaiseHeight > 0.0f;
 
@@ -266,22 +238,6 @@ namespace Tessellation
 						"}\n\n";
 				}
 
-				if (a_mode == Mode::kMeshRaise) {
-					out += "float MeshRaise(float3 worldPosition)\n{\n";
-					if (Settings::debugMeshRaiseFlat) {
-						out += "\treturn kLift * Raise.x;\n}\n\n";
-					} else {
-						out +=
-							"\tconst float ground = SnowRaise(worldPosition);\n"
-							"\tconst float z      = worldPosition.z + CameraPosAdjust.z;\n"
-							"\tconst float band   =\n"
-							"\t\tsmoothstep(Material.x - Material.y, Material.x, z);\n\n"
-
-							"\treturn lerp(ground, kLift * Raise.x, band);\n"
-							"}\n\n";
-					}
-				}
-
 				out +=
 					"\n"
 					"\n"
@@ -307,10 +263,16 @@ namespace Tessellation
 							"\tconst float  inWindow1   = 1.0f - saturate(\n"
 							"\t\t(edgeDist1 - Window1.z) / max(Window1.w - Window1.z, 1e-3f));\n\n"
 							"\tif (inWindow1 > 0.0f) {\n"
-							"\t\tconst float fine = ClipmapHeight.SampleLevel(ClipmapSampler,\n"
+							"\t\tfloat fine = 0.0f;\n"
+							"\t\tfloat coarse = 0.0f;\n"
+							"\t\t[branch] if (inWindow > 0.0f) {\n"
+							"\t\t\tfine = ClipmapHeight.SampleLevel(ClipmapSampler,\n"
 							"\t\t                                             xy / kClipmapWorldSize, 0.0f);\n"
-							"\t\tconst float coarse = ClipmapHeight1.SampleLevel(ClipmapSampler,\n"
+							"\t\t}\n"
+							"\t\t[branch] if (inWindow < 1.0f) {\n"
+							"\t\t\tcoarse = ClipmapHeight1.SampleLevel(ClipmapSampler,\n"
 							"\t\t                                                xy / kClipmapWorldSize1, 0.0f);\n"
+							"\t\t}\n"
 							"\t\td += lerp(coarse, fine, inWindow) * inWindow1;\n"
 							"\t}\n";
 					} else {
@@ -633,102 +595,6 @@ namespace Tessellation
 			return out;
 		}
 
-		std::string EmitActorPaint(const Reflection::Signature& a_signature)
-		{
-			const int c0 = IndexOf(a_signature, "COLOR", 0);
-			if (c0 < 0) {
-				return {};
-			}
-
-			const int clipIdx = IndexOf(a_signature, "SV_POSITION", 0);
-			const int uvIdx = IndexOf(a_signature, "TEXCOORD", 0);
-
-			const int tbn0 = IndexOf(a_signature, "TEXCOORD", 1);
-			const int tbn1 = IndexOf(a_signature, "TEXCOORD", 2);
-			const int tbn2 = IndexOf(a_signature, "TEXCOORD", 3);
-			const bool haveNormal = tbn0 >= 0 && tbn1 >= 0 && tbn2 >= 0;
-
-			std::string out =
-				"\n\t\n"
-				"\tif (Coat.a > 0.0f) {\n"
-				"\t\tfloat coat = Coat.a;\n"
-				"\t\tconst float cling = saturate(CoatParams.w);\n";
-
-			if (clipIdx >= 0) {
-				out += std::format(
-					"\t\tconst float below =\n"
-					"\t\t\tCoatBand(ReconstructWorld(o.f{0}).z + CameraPosAdjust.z);\n",
-					clipIdx);
-			} else {
-				out += "\t\tconst float below = 1.0f;\n";
-			}
-
-			if (haveNormal) {
-				out += std::format(
-					"\t\tconst float3 coatNormal =\n"
-					"\t\t\tnormalize(float3(o.f{0}.z, o.f{1}.z, o.f{2}.z));\n"
-					"\t\tconst float facing =\n"
-					"\t\t\tsmoothstep(CoatAngles.y, CoatAngles.x, coatNormal.z);\n"
-					"\t\tcoat *= lerp(below, facing, cling);\n",
-					tbn0, tbn1, tbn2);
-			} else {
-
-				out += "\t\tcoat *= below;\n";
-			}
-
-			if (uvIdx >= 0) {
-				out += std::format(
-					"\t\tconst float coatNoise =\n"
-					"\t\t\tfrac(sin(dot(o.f{0}.xy, float2(12.9898f, 78.233f))) * 43758.5453f);\n"
-					"\t\tcoat *= lerp(1.0f - CoatParams.z, 1.0f, coatNoise);\n",
-					uvIdx);
-			}
-
-			out += std::format(
-				"\t\to.f{0}.rgb = lerp(o.f{0}.rgb, Coat.rgb * CoatAngles.z, saturate(coat));\n"
-				"\t}}\n",
-				c0);
-
-			if (Settings::debugPaintMask == 4) {
-				out += std::format(
-					"\n\t\n"
-					"\to.f{0}.rgb = float3(0.0f, 0.0f, saturate(Coat.a));\n",
-					c0);
-			} else if (Settings::debugPaintMask > 0 && clipIdx >= 0) {
-				const bool red = (Settings::debugPaintMask & 1) != 0;
-				const bool green = (Settings::debugPaintMask & 2) != 0 && haveNormal;
-
-				out += "\n\t\n\t{\n";
-
-				out += std::format(
-					"\t\tconst float mZ = ReconstructWorld(o.f{0}).z + CameraPosAdjust.z;\n"
-					"\t\tconst float mBelow = CoatBand(mZ);\n",
-					clipIdx);
-
-				if (green) {
-					out += std::format(
-						"\t\tconst float3 mN = normalize(float3(o.f{0}.z, o.f{1}.z, o.f{2}.z));\n"
-						"\t\tconst float mFacing = smoothstep(CoatAngles.y, CoatAngles.x, mN.z);\n",
-						tbn0, tbn1, tbn2);
-				}
-
-				out += std::format(
-					"\t\to.f{0}.rgb = float3({1}, {2}, 0.0f);\n"
-					"\t}}\n",
-					c0, red ? "mBelow" : "0.0f", green ? "mFacing" : "0.0f");
-			}
-
-			if (Settings::debugActorTint > 0.0f) {
-				out += std::format(
-					"\t\n"
-					"\to.f{0}.rgb = lerp(o.f{0}.rgb, float3({1:.4f}f, {2:.4f}f, {3:.4f}f), {4:.4f}f);\n",
-					c0, Settings::debugActorTintColour[0], Settings::debugActorTintColour[1],
-					Settings::debugActorTintColour[2], Settings::debugActorTint);
-			}
-
-			return out;
-		}
-
 		std::string EmitDomain(const Reflection::Signature& a_signature, bool a_wantDisplace,
 			Mode a_mode)
 		{
@@ -790,9 +656,6 @@ namespace Tessellation
 				}
 			}
 
-			if (a_mode == Mode::kActorPaint) {
-				out += EmitActorPaint(a_signature);
-			}
 
 			out += "\treturn o;\n}\n";
 			return out;
@@ -808,20 +671,14 @@ namespace Tessellation
 
 		std::mutex                            g_cacheLock;
 		std::unordered_map<uint64_t, Pair>    g_cache;
-		std::unordered_map<uint64_t, Pair>    g_actorCache;
 		std::unordered_map<uint64_t, Pair>    g_probeCache;
-		std::unordered_map<uint64_t, Pair>    g_meshCache;
 		std::unordered_map<uint64_t, Pair>    g_bloodCache;
 
 		std::unordered_map<uint64_t, Pair>& CacheFor(Mode a_mode)
 		{
 			switch (a_mode) {
-			case Mode::kActorPaint:
-				return g_actorCache;
 			case Mode::kStaticProbe:
 				return g_probeCache;
-			case Mode::kMeshRaise:
-				return g_meshCache;
 			case Mode::kBloodDecal:
 				return g_bloodCache;
 			default:
@@ -844,6 +701,11 @@ namespace Tessellation
 				const auto ds = globals::d3d::device->CreateDomainShader(job->domain->GetBufferPointer(),
 					job->domain->GetBufferSize(), nullptr, &pair.ds);
 				pair.failed = FAILED(hs) || FAILED(ds);
+				if (!pair.failed) {
+					if (!TerrainProcessingGuard::Mark(pair.hs) || !TerrainProcessingGuard::Mark(pair.ds)) {
+						logger::error("Terrain processing guard: could not mark shader ownership");
+					}
+				}
 				if (pair.failed) {
 					if (pair.hs) { pair.hs->Release(); pair.hs = nullptr; }
 					if (pair.ds) { pair.ds->Release(); pair.ds = nullptr; }
@@ -919,7 +781,6 @@ namespace Tessellation
 		static_assert(sizeof(MaterialCB) % 16 == 0);
 
 		ID3D11Buffer* g_materialCB{ nullptr };
-		ID3D11Buffer* g_actorPaintCB{ nullptr };
 
 		bool EnsureBuffer(ID3D11Buffer*& a_buffer, size_t a_size, const char* a_what)
 		{
@@ -944,100 +805,6 @@ namespace Tessellation
 				return false;
 			}
 			return true;
-		}
-
-		struct ActorPaintCB
-		{
-			float coat[4]{};
-			float params[4]{};
-
-			float angles[4]{};
-		};
-		static_assert(sizeof(ActorPaintCB) % 16 == 0);
-
-		std::atomic<uint32_t> g_paintBindsLogged{ 0 };
-		constexpr uint32_t    kMaxPaintBindsLogged = 8;
-
-		void BindActorPaint(ID3D11DeviceContext* a_context, const DrawMaterial& a_material)
-		{
-			if (!EnsureBuffer(g_actorPaintCB, sizeof(ActorPaintCB), "actor paint")) {
-				return;
-			}
-
-			float reach = Settings::paintReach > 0.0f ?
-				Settings::paintReach + Settings::paintReachFraction * a_material.coatHeight :
-				0.0f;
-
-			if (Settings::debugPaintMask > 0 && reach <= 0.0f) {
-				reach = a_material.coatHeight > 1.0f ? a_material.coatHeight : 128.0f;
-			}
-
-			if (Settings::logActorPaint && a_material.coatAmount > 0.0f &&
-				g_paintBindsLogged.fetch_add(1) < kMaxPaintBindsLogged) {
-				logger::info(
-					"Paint bound to b{}: colour=({:.2f}, {:.2f}, {:.2f}) amount={:.2f} "
-					"strength={:.2f} cling={:.2f} bottomZ={:.0f} height={:.0f} "
-					"reach={:.1f} noise={:.2f}",
-					kActorPaintSlot, a_material.coatColour[0], a_material.coatColour[1],
-					a_material.coatColour[2], a_material.coatAmount, Settings::paintStrength,
-					a_material.coatCling, a_material.coatFeetZ, a_material.coatHeight, reach,
-					Settings::paintNoise);
-			}
-
-			ActorPaintCB paint{};
-			paint.coat[0] = a_material.coatColour[0];
-			paint.coat[1] = a_material.coatColour[1];
-			paint.coat[2] = a_material.coatColour[2];
-			paint.coat[3] = a_material.coatAmount * Settings::paintStrength;
-			paint.params[0] = a_material.coatFeetZ;
-			paint.params[1] = reach;
-			paint.params[2] = Settings::paintNoise;
-			paint.params[3] = a_material.coatCling;
-
-			const float toRadians = 0.017453292f;
-			const float full = std::cos(std::clamp(Settings::paintClingAngle, 0.0f, 90.0f) * toRadians);
-			const float zero = std::cos(
-				std::min(Settings::paintClingAngle + Settings::paintClingFeather, 179.0f) * toRadians);
-
-			paint.angles[0] = full;
-			paint.angles[1] = std::min(zero, full - 1e-4f);
-			paint.angles[2] = a_material.coatGain;
-
-			paint.angles[3] = std::clamp(Settings::paintReachPlateau, 0.0f, 0.95f);
-
-			D3D11_MAPPED_SUBRESOURCE mapped{};
-			if (SUCCEEDED(
-					a_context->Map(g_actorPaintCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-				std::memcpy(mapped.pData, &paint, sizeof(paint));
-				a_context->Unmap(g_actorPaintCB, 0);
-			}
-
-			a_context->DSSetConstantBuffers(kActorPaintSlot, 1, &g_actorPaintCB);
-		}
-
-		void UnbindActorPaint(ID3D11DeviceContext* a_context)
-		{
-			ID3D11Buffer* nullCB = nullptr;
-			a_context->DSSetConstantBuffers(kActorPaintSlot, 1, &nullCB);
-		}
-
-		void BindMeshBound(ID3D11DeviceContext* a_context, const DrawMaterial& a_material)
-		{
-			if (!EnsureBuffer(g_materialCB, sizeof(MaterialCB), "per-draw mesh bound")) {
-				return;
-			}
-
-			MaterialCB bound{};
-			bound.material[0] = a_material.meshTopZ;
-			bound.material[1] = a_material.meshBand;
-
-			D3D11_MAPPED_SUBRESOURCE mapped{};
-			if (SUCCEEDED(a_context->Map(g_materialCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-				std::memcpy(mapped.pData, &bound, sizeof(bound));
-				a_context->Unmap(g_materialCB, 0);
-			}
-
-			a_context->DSSetConstantBuffers(kMaterialSlot, 1, &g_materialCB);
 		}
 
 		void BindMaterial(ID3D11DeviceContext* a_context, const DrawMaterial& a_material)
@@ -1174,14 +941,6 @@ namespace Tessellation
 				Shelter::BindDomain(context);
 			}
 			BindMaterial(context, a_material);
-		} else if (a_mode == Mode::kActorPaint) {
-			BindActorPaint(context, a_material);
-		} else if (a_mode == Mode::kMeshRaise) {
-
-			Clipmap::BindDomain(context);
-			SnowCoverage::BindDomain(context);
-			Shelter::BindDomain(context);
-			BindMeshBound(context, a_material);
 		}
 
 		g_activeMode = a_mode;
@@ -1223,7 +982,7 @@ namespace Tessellation
 			context->RSSetState(state);
 			if (state) { state->Release(); }
 		}
-		if (a_mode == Mode::kLandscape) { TerrainBlendDiagnostics::Begin(context); }
+		if (a_mode == Mode::kLandscape) { TerrainBlendDiagnostics::Begin(context, g_biasValue); }
 		return true;
 	}
 
@@ -1239,7 +998,7 @@ namespace Tessellation
 
 		auto* context = globals::d3d::context;
 
-		if (g_activeMode == Mode::kLandscape) { TerrainBlendDiagnostics::End(context); }
+		if (g_activeMode == Mode::kLandscape) { TerrainBlendDiagnostics::End(context, g_biasValue); }
 		g_culling.End(context);
 		if (g_biasActive) {
 			context->HSSetConstantBuffers(9, 1, &g_savedBiasHS);
@@ -1257,8 +1016,6 @@ namespace Tessellation
 				Shelter::UnbindDomain(context);
 			}
 			UnbindMaterial(context);
-		} else {
-			UnbindActorPaint(context);
 		}
 
 		context->HSSetShader(g_saved.hs, nullptr, 0);
@@ -1287,7 +1044,7 @@ namespace Tessellation
 				}
 
 				g_biasShaders.emplace(shader, bias);
-				if (bias != 0) { logger::info("Terrain blending correction: captured CS offset shader recognized; clip bias={}", bias); }
+				if (bias != 0) { logger::info("Terrain blending correction: validated CS offset shader recognized; clip bias={}", bias); }
 			}
 		}
 		if (bias != g_biasValue) {
@@ -1313,8 +1070,6 @@ namespace Tessellation
 		switch (a_mode) {
 		case Mode::kStaticProbe:
 			return Settings::staticProbeOffset != 0.0f;
-		case Mode::kMeshRaise:
-			return Settings::meshRaiseHeight > 0.0f;
 		case Mode::kLandscape:
 		case Mode::kBloodDecal:
 			return Settings::debugWorldZOffset != 0.0f ||
@@ -1338,7 +1093,7 @@ namespace Tessellation
 		if (!globals::Ready()) { return; }
 		const int64_t started = Profiler::Ticks();
 		const std::scoped_lock lock(g_cacheLock);
-		for (auto* cache : { &g_cache, &g_actorCache, &g_probeCache, &g_meshCache, &g_bloodCache }) {
+		for (auto* cache : { &g_cache, &g_probeCache, &g_bloodCache }) {
 
 			const bool waiting = std::any_of(cache->begin(), cache->end(), [](const auto& entry) {
 				return entry.second.pending &&
@@ -1362,7 +1117,7 @@ namespace Tessellation
 		TerrainBlendDiagnostics::Reset();
 		const std::scoped_lock lock(g_cacheLock);
 		ShaderCompiler::GetWorker().CancelQueued();
-		for (auto* cache : { &g_cache, &g_actorCache, &g_probeCache, &g_meshCache, &g_bloodCache }) {
+		for (auto* cache : { &g_cache, &g_probeCache, &g_bloodCache }) {
 			for (auto& [desc, pair] : *cache) {
 				if (pair.hs) {
 					pair.hs->Release();
@@ -1377,10 +1132,6 @@ namespace Tessellation
 		if (g_materialCB) {
 			g_materialCB->Release();
 			g_materialCB = nullptr;
-		}
-		if (g_actorPaintCB) {
-			g_actorPaintCB->Release();
-			g_actorPaintCB = nullptr;
 		}
 	}
 }

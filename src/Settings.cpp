@@ -123,114 +123,11 @@ namespace Settings
 			}
 		}
 
-		void ParseTriple(const std::string& a_key, const std::string& a_value, float (&a_out)[3])
-		{
-			size_t index = 0;
-			size_t start = 0;
-			while (index < 3 && start <= a_value.size()) {
-				const auto comma = a_value.find(',', start);
-				const auto end = comma == std::string::npos ? a_value.size() : comma;
-
-				const auto piece = Trim(std::string_view(a_value).substr(start, end - start));
-				if (!piece.empty()) {
-					a_out[index] = std::clamp(AsFloat(a_key, piece, a_out[index]), 0.0f, 1.0f);
-				}
-
-				++index;
-				if (comma == std::string::npos) {
-					break;
-				}
-				start = comma + 1;
-			}
-		}
-
-		void ParsePaint(const std::string& a_key, const std::string& a_value,
-			Surfaces::Paint& a_out)
-		{
-			float components[6]{ a_out.colour[0], a_out.colour[1], a_out.colour[2],
-				a_out.rate, a_out.cling, a_out.gain };
-			bool  given[6]{};
-
-			size_t index = 0;
-			size_t start = 0;
-			while (index < 6 && start <= a_value.size()) {
-				const auto comma = a_value.find(',', start);
-				const auto end = comma == std::string::npos ? a_value.size() : comma;
-
-				const auto piece = Trim(std::string_view(a_value).substr(start, end - start));
-				if (!piece.empty()) {
-					components[index] = AsFloat(a_key, piece, components[index]);
-					given[index] = true;
-				}
-
-				++index;
-				if (comma == std::string::npos) {
-					break;
-				}
-				start = comma + 1;
-			}
-
-			const bool byteRange =
-				components[0] > 1.0f || components[1] > 1.0f || components[2] > 1.0f;
-
-			for (size_t i = 0; i < 3; ++i) {
-				if (!given[i]) {
-					continue;
-				}
-				const float value = byteRange ? components[i] / 255.0f : components[i];
-				a_out.colour[i] = std::clamp(value, 0.0f, 1.0f);
-			}
-
-			if (given[3]) {
-				a_out.rate = std::clamp(components[3], 0.0f, 8.0f);
-			}
-
-			if (given[4]) {
-				a_out.cling = std::clamp(components[4], 0.0f, 1.0f);
-			}
-
-			if (given[5]) {
-				a_out.gain = Clamped(a_key + " gain", components[5], 0.0f, 16.0f);
-			}
-
-			if (byteRange) {
-				logger::info("{}: read as 0-255, giving ({:.3f}, {:.3f}, {:.3f})", a_key,
-					a_out.colour[0], a_out.colour[1], a_out.colour[2]);
-			}
-		}
-
-		float ParseKeep(const std::string& a_key, const std::string& a_value, float a_default)
-		{
-			const float kept = Clamped(a_key, AsFloat(a_key, a_value, a_default), 0.0f, 1.0f);
-
-			if (a_key.starts_with("PaintShed")) {
-				logger::warn("{} is now {}. It always meant the fraction KEPT after a "
-							 "second, not the fraction lost - {} keeps {:.0f}% per second.",
-					a_key, a_key == "PaintShedPerSecond" ? "PaintKeepPerSecond" :
-														   "PaintKeepRunning",
-					kept, kept * 100.0f);
-			}
-
-			if (kept < 0.5f) {
-				logger::warn("{} = {} keeps only {:.0f}% of a coat per second, which "
-							 "erases it in about {:.1f}s. Values near 1 are what hold a "
-							 "coat; 0.97 loses 3% a second.",
-					a_key, kept, kept * 100.0f,
-					kept > 0.0f ? std::log(0.02f) / std::log(kept) : 0.0f);
-			}
-
-			return kept;
-		}
-
 		Surfaces::Response& Response(Surfaces::Type a_type)
 		{
 			return surfaceResponse[static_cast<size_t>(a_type)];
 		}
 
-		Surfaces::Paint& PaintEntry(Surfaces::Type a_type)
-		{
-			return surfacePaint[static_cast<size_t>(a_type)];
-		}
 	}
 
 	namespace
@@ -338,22 +235,6 @@ namespace Settings
 			enableStaticProbe = AsBool(value);
 		} else if (key == "StaticProbeOffset") {
 			staticProbeOffset = Clamped(key, AsFloat(key, value, 0.0f), -512.0f, 2048.0f);
-		} else if (key == "EnableMeshRaise") {
-			enableMeshRaise = AsBool(value);
-		} else if (key == "MeshRaiseHeight") {
-			meshRaiseHeight = Clamped(key, AsFloat(key, value, 0.0f), 0.0f, 512.0f);
-		} else if (key == "MeshRaiseBand") {
-			meshRaiseBand = Clamped(key, AsFloat(key, value, 0.5f), 0.02f, 1.0f);
-		} else if (key == "MeshSnowKeywords") {
-			meshSnowKeywords = AsKeywords(value, meshSnowKeywords);
-		} else if (key == "MeshSnowMatoIds") {
-			meshSnowMatoIds = AsLower(value);
-		} else if (key == "MeshRaiseAnyMato") {
-			meshRaiseAnyMato = AsBool(value);
-		} else if (key == "DebugMeshRaiseFlat") {
-			debugMeshRaiseFlat = AsBool(value);
-		} else if (key == "LogMeshRaise") {
-			logMeshRaise = AsBool(value);
 		} else if (key == "StaticProbeMinTriangles") {
 			staticProbeMinTriangles = static_cast<int>(
 				Clamped(key, AsFloat(key, value, 2000), 0.0f, 65535.0f));
@@ -500,8 +381,7 @@ namespace Settings
 			snowSparkleOpacity = Clamped(key, AsFloat(key, value, 0.5f), 0.0f, 1.0f);
 		} else if (key == "SnowSparkleShape") {
 			snowSparkleShape = Clamped(key, AsFloat(key, value, 1.0f), 0.0f, 1.0f);
-		} else if (key == "EnableStampShapes") {
-			enableStampShapes = AsBool(value);
+
 		} else if (key == "StampFootShape") {
 			stampFootShape = AsBool(value);
 		} else if (key == "EnableBloodDecals") {
@@ -596,67 +476,7 @@ namespace Settings
 			logStampFeet = AsBool(value);
 		} else if (key == "LogStampSurfaces") {
 			logStampSurfaces = AsBool(value);
-		} else if (key == "EnableActorPaint") {
-			enableActorPaint = AsBool(value);
-		} else if (key == "DebugActorTint") {
-			debugActorTint = std::clamp(AsFloat(key, value, 0.0f), 0.0f, 1.0f);
-		} else if (key == "DebugActorTintColour" || key == "DebugActorTintColor") {
-			ParseTriple(key, value, debugActorTintColour);
-		} else if (key == "PaintPickupRate") {
-			paintPickupRate = Clamped(key, AsFloat(key, value, 0.80f), 0.0f, 32.0f);
-		} else if (key == "PaintBlendRate") {
-			paintBlendRate = Clamped(key, AsFloat(key, value, 0.35f), 0.0f, 1.0f);
-		} else if (key == "PaintFullSpeed") {
-			paintFullSpeed = std::max(AsFloat(key, value, 200.0f), 1.0f);
-		} else if (key == "PaintStandingScale") {
-			paintStandingScale = std::clamp(AsFloat(key, value, 0.25f), 0.0f, 1.0f);
-		} else if (key == "PaintKeepPerSecond" || key == "PaintShedPerSecond") {
-			paintKeepPerSecond = ParseKeep(key, value, 0.97f);
-		} else if (key == "PaintKeepRunning" || key == "PaintShedRunning") {
-			paintKeepRunning = ParseKeep(key, value, 0.90f);
-		} else if (key == "PaintReach") {
-			paintReach = std::max(AsFloat(key, value, 20.0f), 0.0f);
 
-			if (paintReach > 0.0f && paintReach < 4.0f) {
-				logger::warn(
-					"PaintReach is {} WORLD UNITS, not a fraction - that reaches barely "
-					"above the soles. Shin height on a human is about 34.",
-					paintReach);
-			}
-		} else if (key == "PaintReachFraction") {
-			paintReachFraction = std::clamp(AsFloat(key, value, 0.22f), 0.0f, 4.0f);
-		} else if (key == "PaintReachPlateau") {
-			paintReachPlateau = Clamped(key, AsFloat(key, value, 0.3f), 0.0f, 0.95f);
-		} else if (key == "PaintClingAngle") {
-			paintClingAngle = std::clamp(AsFloat(key, value, 55.0f), 0.0f, 90.0f);
-		} else if (key == "PaintClingFeather") {
-			paintClingFeather = std::clamp(AsFloat(key, value, 20.0f), 0.1f, 90.0f);
-		} else if (key == "PaintStrength") {
-			paintStrength = Clamped(key, AsFloat(key, value, 1.0f), 0.0f, 32.0f);
-		} else if (key == "PaintNoise") {
-			paintNoise = Clamped(key, AsFloat(key, value, 1.0f), 0.0f, 4.0f);
-		} else if (key == "DebugPaintMask") {
-			debugPaintMask = static_cast<int>(Clamped(key, AsFloat(key, value, 0), 0.0f, 4.0f));
-		} else if (key == "LogActorPaint") {
-			logActorPaint = AsBool(value);
-		} else if (key == "PaintSnow") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kSnow));
-		} else if (key == "PaintDirt") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kDirt));
-		} else if (key == "PaintMud") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kMud));
-		} else if (key == "PaintSand") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kSand));
-		} else if (key == "PaintAsh") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kAsh));
-		} else if (key == "PaintGrass") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kGrass));
-		} else if (key == "PaintGravel") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kGravel));
-		} else if (key == "PaintStone") {
-			ParsePaint(key, value, PaintEntry(Surfaces::Type::kStone));
-		} else if (key == "LogStampShape") {
-			logStampShape = AsBool(value);
 		} else if (key == "EnableLogging") {
 			enableLogging = AsBool(value);
 		} else if (key == "LogDraws") {
@@ -783,10 +603,10 @@ namespace Settings
 			blendStrength);
 
 		logger::info("Marks: depth={} decay={}/s | rim height={}*depth span={}*radius | "
-					 "shapes={} oriented={} keyword={} length={} aspect={} separation={} | "
+					 "oriented={} keyword={} length={} aspect={} separation={} | "
 					 "radius={}*bound reach={} clearance={} | repose={} deg",
 			stampDepth, stampDecayPerSecond, stampRimHeight, stampRimSpan,
-			enableStampShapes, stampFootShape, stampShapeKeyword, stampFootLength,
+			stampFootShape, stampShapeKeyword, stampFootLength,
 			stampFootAspect, stampFootSeparation, stampRadiusScale, stampFootReach,
 			stampGroundClearance, stampSlopeLimit);
 
@@ -822,21 +642,6 @@ namespace Settings
 					 "fade={} | coverage budget={}/frame",
 			enableSnowRaise, snowRaiseHeight, snowRaiseWeather, snowRaiseDistance,
 			snowRaiseFadeBand, snowCoverageBudget);
-
-			logger::info("Mesh raise: enabled={} | height={} | band={} of the mesh | "
-				"keywords={}",
-				enableMeshRaise, meshRaiseHeight, meshRaiseBand, meshSnowKeywords);
-
-			if (enableMeshRaise && meshRaiseHeight <= 0.0f) {
-				logger::info("  mesh raise is ON but MeshRaiseHeight is 0 - snow meshes will "
-							 "be routed and lifted by nothing");
-			}
-
-			if (enableMeshRaise && enableStaticProbe) {
-				logger::warn("EnableStaticProbe and EnableMeshRaise are both on. The probe "
-							 "wins on every static, so the mesh raise will appear to do "
-							 "nothing - the probe is a diagnostic and claims the draws first.");
-			}
 
 			if (enableStaticProbe) {
 				logger::warn("Trap 8 probe is ON: static meshes are routed through the hull "
@@ -913,24 +718,6 @@ namespace Settings
 
 		g_lastWrite = WriteTimeOrZero();
 
-		if (enableActorPaint) {
-			logger::info("Actor paint: pickup={} blend={} standing={} keep={}/{} "
-						 "reach={}+{}*height strength={} noise={} cling={}deg+{}",
-				paintPickupRate, paintBlendRate, paintStandingScale, paintKeepPerSecond,
-				paintKeepRunning, paintReach, paintReachFraction, paintStrength, paintNoise,
-				paintClingAngle, paintClingFeather);
-
-			for (size_t i = 0; i < static_cast<size_t>(Surfaces::Type::kCount); ++i) {
-				const auto& paint = surfacePaint[i];
-				if (paint.rate <= 0.0f) {
-					continue;
-				}
-				logger::info("  {:<7} colour=({:.2f}, {:.2f}, {:.2f}) rate={:.2f} "
-							 "cling={:.2f} gain={:.2f}",
-					Surfaces::Name(static_cast<Surfaces::Type>(i)), paint.colour[0],
-					paint.colour[1], paint.colour[2], paint.rate, paint.cling, paint.gain);
-			}
-		}
 	}
 
 	bool PollForChanges(float a_deltaSeconds)

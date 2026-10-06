@@ -58,19 +58,6 @@ namespace Surfaces
 
 	float RimHeight(float a_markDepth, float a_rimScale);
 
-	struct Paint
-	{
-		float colour[3]{ 0.0f, 0.0f, 0.0f };
-
-		float rate{ 0.0f };
-
-		float cling{ 0.0f };
-
-		float gain{ 1.0f };
-	};
-
-	const Paint& PaintFor(Type a_type);
-
 	bool MatchesKeywords(std::string_view a_name, std::string_view a_keywords);
 
 	Type ClassifyTexturePath(std::string_view a_path, bool a_skipSnow = false);

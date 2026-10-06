@@ -15,28 +15,6 @@
 namespace Clipmap
 {
 
-	inline constexpr float kPrintCoreLo = 0.06f;
-	inline constexpr float kPrintCoreHi = 0.96f;
-	inline constexpr float kPrintBandRiseLo = 0.14f;
-	inline constexpr float kPrintBandRiseHi = 0.34f;
-	inline constexpr float kPrintBandFallLo = 0.52f;
-	inline constexpr float kPrintBandFallHi = 0.84f;
-
-	inline float PrintHeightFor(float a_mask, float a_depth, float a_rim)
-	{
-		const auto smoothstep = [](float a_lo, float a_hi, float a_x) {
-			const float t = std::clamp((a_x - a_lo) / (a_hi - a_lo), 0.0f, 1.0f);
-			return t * t * (3.0f - 2.0f * t);
-		};
-
-		const float core = smoothstep(kPrintCoreLo, kPrintCoreHi, a_mask);
-		const float band = std::clamp(smoothstep(kPrintBandRiseLo, kPrintBandRiseHi, a_mask) -
-										  smoothstep(kPrintBandFallLo, kPrintBandFallHi, a_mask),
-			0.0f, 1.0f);
-
-		return a_rim * band - a_depth * core;
-	}
-
 	template <class Params>
 	void FillStampBounds(Params& params, uint32_t count)
 	{
@@ -63,8 +41,7 @@ RWTexture2D<float2> DecayRate : register(u1);
 
 RWTexture2D<uint> Activity : register(u2);
 
-Texture2D<float4> ShapeMask : register(t0);
-SamplerState      ShapeSampler : register(s0);
+SamplerState      FieldSampler : register(s0);
 
 Texture2D<float> CoarseField : register(t1);
 Texture2D<float2> CoarseDecay : register(t2);
@@ -175,7 +152,7 @@ float SnowBlanket(float2 worldXY)
 	f = f * f * (3.0f - 2.0f * f);
 	uv = (i + f - 0.5f) / kCoverageTexels;
 
-	const float cover = SnowCoverageMap.SampleLevel(ShapeSampler, uv, 0.0f);
+	const float cover = SnowCoverageMap.SampleLevel(FieldSampler, uv, 0.0f);
 	const float snowy = smoothstep(0.5f, 1.0f, cover);
 
 	float lift = snowy * Raise.x * Raise.y;
@@ -188,7 +165,7 @@ float SnowBlanket(float2 worldXY)
 		cf = cf * cf * (3.0f - 2.0f * cf);
 		cuv = (ci + cf - 0.5f) / kMeshCapTexels;
 
-		float cap = SnowMeshCapMap.SampleLevel(ShapeSampler, cuv, 0.0f);
+		float cap = SnowMeshCapMap.SampleLevel(FieldSampler, cuv, 0.0f);
 		cap = lerp(cap, 1.0f, saturate(
 			(reach - kMeshCapFadeStart) /
 			max(kMeshCapFadeEnd - kMeshCapFadeStart, 1e-3f)));
@@ -209,35 +186,6 @@ float2 SweptDelta(float2 worldXY, float4 s, float2 motion)
 
 	const float t = saturate(dot(delta + motion, motion) / lenSq);
 	return delta + motion * (1.0f - t);
-}
-
-float PrintProfile(float2 worldXY, float4 s, float4 p, float4 shape, float2 motion)
-{
-	const float2 forward = normalize(shape.xy);
-	const float2 right = float2(-forward.y, forward.x);
-
-	const float2 delta = SweptDelta(worldXY, s, motion);
-
-	const float2 local = float2(dot(delta, right), dot(delta, forward));
-	const float  halfWidth = max(shape.z, 1e-3f);
-	const float  halfLength = max(s.z, 1e-3f);
-
-	const float2 uv = float2(
-		0.5f + (local.x * shape.w) / (halfWidth * 2.0f),
-		0.5f - local.y / (halfLength * 2.0f));
-
-	if (any(uv < 0.0f) || any(uv > 1.0f)) {
-		return 0.0f;
-	}
-
-	const float m = ShapeMask.SampleLevel(ShapeSampler, uv, 0).r;
-
-	const float core = smoothstep(kPrintCoreLo, kPrintCoreHi, m);
-	const float band = saturate(
-		smoothstep(kPrintBandRiseLo, kPrintBandRiseHi, m) -
-		smoothstep(kPrintBandFallLo, kPrintBandFallHi, m));
-
-	return p.w * band - s.w * core;
 }
 
 float StampDistance(float2 worldXY, float4 s, float4 shape, float2 motion)
@@ -382,17 +330,6 @@ void main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 			continue;
 		}
 
-		if (p.z > 1.5f) {
-			const float printed =
-				PrintProfile(worldXY, s, p, StampShape[i], motion);
-			if (abs(printed) > abs(target)) {
-				target = printed;
-				targetRate = p.y;
-				targetSnow = stampSnow;
-			}
-			continue;
-		}
-
 		float profile = -s.w * f * max(1.0f + rim.w * churn, 0.0f);
 
 		if (p.w > 0.0f && rim.x > 0.0f) {
@@ -465,13 +402,13 @@ void main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 
 			const float o = (0.5f / Window.w) * Coarse.z;
 
-			float sum = CoarseField.SampleLevel(ShapeSampler, uv + float2(-o, -o), 0).r;
-			sum += CoarseField.SampleLevel(ShapeSampler, uv + float2(o, -o), 0).r;
-			sum += CoarseField.SampleLevel(ShapeSampler, uv + float2(-o, o), 0).r;
-			sum += CoarseField.SampleLevel(ShapeSampler, uv + float2(o, o), 0).r;
+			float sum = CoarseField.SampleLevel(FieldSampler, uv + float2(-o, -o), 0).r;
+			sum += CoarseField.SampleLevel(FieldSampler, uv + float2(o, -o), 0).r;
+			sum += CoarseField.SampleLevel(FieldSampler, uv + float2(-o, o), 0).r;
+			sum += CoarseField.SampleLevel(FieldSampler, uv + float2(o, o), 0).r;
 			h = sum * 0.25f;
 
-			const float2 coarseMetadata = CoarseDecay.SampleLevel(ShapeSampler, uv, 0);
+			const float2 coarseMetadata = CoarseDecay.SampleLevel(FieldSampler, uv, 0);
 			rate = coarseMetadata.x;
 			snow = coarseMetadata.y >= 0.5f ? 1.0f : 0.0f;
 		} else {
@@ -508,13 +445,6 @@ void main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 	inline std::string UpdateShaderSource()
 	{
 		return std::format(
-				"static const float kPrintCoreLo = {:.6f};\n"
-				"static const float kPrintCoreHi = {:.6f};\n"
-				"static const float kPrintBandRiseLo = {:.6f};\n"
-				"static const float kPrintBandRiseHi = {:.6f};\n"
-				"static const float kPrintBandFallLo = {:.6f};\n"
-				"static const float kPrintBandFallHi = {:.6f};\n"
-
 				"static const uint2 kActivityGroups = uint2({}, {});\n"
 
 				"static const int2 kActivityWrap = int2({}, {});\n"
@@ -526,8 +456,6 @@ void main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 
 				"static const float kMeshCapFadeStart  = {:.4f}f;\n"
 				"static const float kMeshCapFadeEnd    = {:.4f}f;\n",
-				kPrintCoreLo, kPrintCoreHi, kPrintBandRiseLo, kPrintBandRiseHi,
-				kPrintBandFallLo, kPrintBandFallHi,
 				kActivityRatio / 8, kActivityRatio / 8,
 				kActivityTexels - 1, kActivityTexels - 1,
 				SnowCoverage::kWorldSize, static_cast<float>(SnowCoverage::kTexels),
