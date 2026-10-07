@@ -616,7 +616,7 @@ float4 main(VSOut i) : SV_TARGET
 
 		D3D11_TEXTURE2D_DESC mainDesc{};
 		if (main.texture) {
-			main.texture->GetDesc(&mainDesc);
+			reinterpret_cast<ID3D11Texture2D*>(main.texture)->GetDesc(&mainDesc);
 		}
 		if (mainDesc.Width == 0 || vpWidth * 2 < mainDesc.Width ||
 			vpHeight * 2 < mainDesc.Height) {
@@ -627,8 +627,8 @@ float4 main(VSOut i) : SV_TARGET
 			return;
 		}
 
-		const auto& view = shadowState->GetRuntimeData().cameraData.getEye();
-		const auto& adjust = shadowState->GetRuntimeData().posAdjust.getEye();
+		const auto& view = REL::Module::IsVR() ? shadowState->GetVRRuntimeData().cameraData.getEye() : shadowState->GetRuntimeData().cameraData.getEye();
+		const auto& adjust = REL::Module::IsVR() ? shadowState->GetVRRuntimeData().posAdjust.getEye() : shadowState->GetRuntimeData().posAdjust.getEye();
 
 		float ambient = 1.0f;
 		if (auto* sky = RE::Sky::GetSingleton()) {
@@ -685,7 +685,9 @@ float4 main(VSOut i) : SV_TARGET
 
 		const GraphicsStateGuard guard(context);
 
-		context->OMSetRenderTargets(1, &main.RTV, depth.views[0]);
+		auto* mainRTV = reinterpret_cast<ID3D11RenderTargetView*>(main.RTV);
+		auto* mainDSV = reinterpret_cast<ID3D11DepthStencilView*>(depth.views[0]);
+		context->OMSetRenderTargets(1, &mainRTV, mainDSV);
 		context->OMSetDepthStencilState(DepthStateFor(minDepth, maxDepth), 0);
 		const FLOAT blendFactor[4]{ 0.0f, 0.0f, 0.0f, 0.0f };
 		context->OMSetBlendState(g_blend, blendFactor, 0xFFFFFFFF);

@@ -85,7 +85,7 @@ namespace Hooks
 			}
 
 			if (auto* shadowState = RE::BSGraphics::RendererShadowState::GetSingleton()) {
-				if (auto* vs = shadowState->GetRuntimeData().currentVertexShader) {
+				if (auto* vs = REL::Module::IsVR() ? shadowState->GetVRRuntimeData().currentVertexShader : shadowState->GetRuntimeData().currentVertexShader) {
 					info.vertexTechnique = vs->id;
 					info.vertexDesc = vs->vertexDesc;
 					info.byteCodeSize = vs->byteCodeSize;
@@ -492,7 +492,7 @@ namespace Hooks
 				return true;
 			}
 
-			const auto&  view = shadowState->GetRuntimeData().cameraData.getEye();
+			const auto& view = REL::Module::IsVR() ? shadowState->GetVRRuntimeData().cameraData.getEye() : shadowState->GetRuntimeData().cameraData.getEye();
 			const float* vp = &view.viewProjMat.m[0][0];
 			const bool   perspective = UtilityRouting::IsPerspectiveProjection(vp);
 
@@ -563,7 +563,7 @@ namespace Hooks
 				context->GSGetShader(&gs, nullptr, nullptr);
 				context->IAGetPrimitiveTopology(&topology);
 				auto* shadow = RE::BSGraphics::RendererShadowState::GetSingleton();
-				auto* gameVS = shadow ? shadow->GetRuntimeData().currentVertexShader : nullptr;
+				auto* gameVS = shadow ? (REL::Module::IsVR() ? shadow->GetVRRuntimeData().currentVertexShader : shadow->GetRuntimeData().currentVertexShader) : nullptr;
 				const bool sameVS = gameVS &&
 					bound == reinterpret_cast<ID3D11VertexShader*>(gameVS->shader);
 				const bool noTess = !hs && !ds && !gs;

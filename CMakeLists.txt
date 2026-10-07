@@ -2,9 +2,9 @@ cmake_minimum_required(VERSION 3.21)
 
 project(NMN_DeformableTerrain VERSION 0.1.0 LANGUAGES CXX)
 
-set(ENABLE_SKYRIM_SE ON  CACHE BOOL "" FORCE)
-set(ENABLE_SKYRIM_AE ON  CACHE BOOL "" FORCE)
-set(ENABLE_SKYRIM_VR OFF CACHE BOOL "" FORCE)
+option(ENABLE_SKYRIM_SE "Build Skyrim SE support" ON)
+option(ENABLE_SKYRIM_AE "Build Skyrim AE support" ON)
+option(ENABLE_SKYRIM_VR "Build experimental Skyrim VR support" ON)
 set(BUILD_TESTS      OFF CACHE BOOL "" FORCE)
 set(SKSE_SUPPORT_XBYAK ON CACHE BOOL "" FORCE)
 
@@ -63,6 +63,11 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     dxgi.lib
     dxguid.lib
 )
+
+if(MSVC AND ENABLE_SKYRIM_VR)
+    target_link_libraries(${PROJECT_NAME} PRIVATE delayimp.lib)
+    target_link_options(${PROJECT_NAME} PRIVATE /DELAYLOAD:openvr_api.dll)
+endif()
 
 option(BUILD_OFFLINE_TOOLS "Build the offline shader generator" ON)
 
