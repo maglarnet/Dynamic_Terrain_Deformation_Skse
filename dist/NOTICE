@@ -39,7 +39,7 @@ follow ideas proposed by qtuna / Iwillbewarlock in their optimization work.
 Third-party dependencies remain under their respective licences. This project's
 licence does not replace the licences of those dependencies.
 
-  CommonLibSSE-NG   MIT     Ryan-rsm-McKenzie and contributors
+  CommonLibSSE-NG   GPL-3.0-or-later with upstream exceptions; retains MIT portions
   DirectXTK         MIT     Microsoft
   fmt               MIT     Victor Zverovich
   spdlog            MIT     Gabime
@@ -56,3 +56,9 @@ MinHook (extern/minhook) is used for native processing-draw compatibility.
 Copyright (C) 2009-2017 Tsuda Kageyu; distributed under the BSD 2-Clause
 license and component notices preserved in extern/minhook/LICENSE.txt.
 Upstream: https://github.com/TsudaKageyu/minhook
+
+CommonLibSSE-NG 11.0.0 is pinned at 94faaed0c (see the submodule for the full revision).
+Upstream: https://github.com/alandtse/CommonLibSSE-NG
+Copyright notices for Ryan-rsm-McKenzie and other upstream contributors are
+retained in the dependency. Its GNU GPL v3 text, upstream exceptions, original
+MIT notice and hde64 notice are reproduced in dist/licenses/CommonLibSSE-NG/.
