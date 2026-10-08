@@ -28,6 +28,7 @@
 #include "TessellationResources.h"
 #include "BloodDecalFilter.h"
 #include "ObjectStampFilter.h"
+#include "RoadSnowMask.h"
 #include "TerrainCulling.h"
 #include "TerrainActivityPolicy.h"
 #include <limits>
@@ -896,6 +897,53 @@ int main(int argc, char** argv)
 		Require(!ObjectStampFilter::IsVisualBloodProjectile("magic/fireball.nif"), "Unrelated projectiles preserved");
 		Require(!ObjectStampFilter::IsVisualBloodProjectile(""), "Missing model keeps existing classification");
 		std::puts("PASS visual blood projectile exclusion and ordinary projectile preservation");
+		Require(RoadSnowMask::IsRoadModel("landscape\\roads\\snow\\roadstraight01.nif"), "Vanilla snow road recognition");
+		Require(RoadSnowMask::IsRoadModel("WiZkiD/ROADCHUNKS02.NIF"), "Replacement road recognition and case handling");
+		Require(RoadSnowMask::IsRoadModel("NorthernRoads/NR_RoadCurve01.nif"), "Custom road recognition");
+		Require(!RoadSnowMask::IsRoadModel("clutter/roadsigns/roadsign01.nif") &&
+			!RoadSnowMask::IsRoadModel("NorthernRoads/clutter/barrel01.nif") &&
+			!RoadSnowMask::IsRoadModel("landscape/roads/roadstraight01_lod.nif"), "Road clutter and LOD exclusion");
+		{
+			constexpr uint32_t side = 16, count = side * side;
+			std::array<uint8_t, count> roads{}, caps{}, expanded{}, feathered{};
+			std::array<uint32_t, count> rows{};
+			roads[0] = 1; caps.fill(255);
+			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), feathered.data(), rows.data(), 1,
+				[](uint32_t) { return true; });
+			Require(caps[0] == 0 && caps[1] == 0 && caps[side - 1] == 0 && caps[count - 1] == 0,
+				"Road interior and edge margin must stay snow-free across texture wrap");
+			Require(caps[2] > 0 && caps[2] < 255 && caps[3] == 255, "Road edge feather must remain local");
+			caps.fill(255); caps[7] = 42;
+			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), feathered.data(), rows.data(), 1,
+				[](uint32_t) { return false; });
+			Require(caps[0] == 255 && caps[7] == 42, "Stale road cells must not affect a new window or unrelated mesh caps");
+			roads.fill(0); caps.fill(255);
+			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), feathered.data(), rows.data(), 1,
+				[](uint32_t) { return true; });
+			Require(std::all_of(caps.begin(), caps.end(), [](uint8_t value) { return value == 255; }),
+				"Empty road mask must preserve surrounding snow");
+		}
+		std::puts("PASS road snow exclusion: model recognition, wrap, interior suppression, feather, stale cells and empty mask");
+		{
+			RoadSnowMask::Cache<16> roads;
+			Require(roads.Add(-3, 5) && !roads.Add(-3, 5), "Road discoveries must persist and deduplicate");
+			std::array<uint8_t, 256> cover{}, expanded{}, feathered{};
+			std::array<uint32_t, 256> rows{};
+			for (int32_t baseX = -15; baseX <= -3; ++baseX) {
+				cover.fill(255);
+				RoadSnowMask::Apply<16>(roads.Data(), cover.data(), expanded.data(), feathered.data(), rows.data(), 1,
+					[&](uint32_t i) {
+						const int32_t x = baseX + static_cast<int32_t>(((i & 15) - static_cast<uint32_t>(baseX)) & 15);
+						return roads.Contains(x, static_cast<int32_t>(i / 16));
+					});
+				Require(cover[roads.Index(-3, 5)] == 0, "A moving coverage window must keep discovered roads clear");
+			}
+			Require(roads.Contains(-3, 5) && !roads.Contains(13, 5), "Cached road must not alias a recycled slot");
+			Require(roads.Add(13, 5) && !roads.Contains(-3, 5) && roads.Contains(13, 5), "Road cache must replace recycled world cells");
+			roads.Reset();
+			Require(!roads.Contains(13, 5), "Load and world reset must clear road discoveries");
+		}
+		std::puts("PASS persistent road discoveries: moving windows, duplicate probes, negative coordinates, slot reuse and world reset");
 		Field field;
 		CheckDecayPrecision(field);
 		field.CheckTessellationResources();

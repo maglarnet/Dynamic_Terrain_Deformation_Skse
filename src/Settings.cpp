@@ -269,6 +269,12 @@ namespace Settings
 			shelterHeight = Clamped(key, AsFloat(key, value, 1024.0f), 16.0f, 32768.0f);
 		} else if (key == "ShelterMeshCap") {
 			shelterMeshCap = AsBool(value);
+		} else if (key == "ExcludeRoadSnow") {
+			excludeRoadSnow = AsBool(value);
+		} else if (key == "RoadSnowMarginTexels") {
+			roadSnowMarginTexels = static_cast<int>(Clamped(key, AsFloat(key, value, 1), 1.0f, 3.0f));
+		} else if (key == "RoadSnowProbeBudget") {
+			roadSnowProbeBudget = static_cast<int>(Clamped(key, AsFloat(key, value, 24), 1.0f, 256.0f));
 		} else if (key == "ShelterFloorTolerance") {
 			shelterFloorTolerance = Clamped(key, AsFloat(key, value, 8.0f), 1.0f, 512.0f);
 		} else if (key == "ShelterSeamTexels") {

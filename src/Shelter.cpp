@@ -16,12 +16,14 @@
 #include "ShelterFadeCells.h"
 #include "ShelterScan.h"
 #include "ShelterProbeCache.h"
+#include "RoadSnowMask.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <vector>
 #include <atomic>
+#include <unordered_set>
 
 namespace Shelter
 {
@@ -38,6 +40,19 @@ namespace Shelter
 
 		std::vector<uint8_t> g_cap;
 		std::vector<uint8_t> g_capSmooth;
+		std::vector<uint8_t> g_roads, g_roadExpanded, g_roadFeathered;
+		RoadSnowMask::Cache<SnowCoverage::kTexels> g_roadCache;
+		std::vector<uint8_t> g_coverageRoadExpanded, g_coverageRoadFeathered;
+		std::vector<uint32_t> g_coverageRoadRows;
+		std::vector<ShelterProbe::LandCell> g_roadLand;
+		std::vector<double> g_roadRetryAt;
+		struct RoadCell { int32_t x{}, y{}; };
+		std::vector<RoadCell> g_roadCandidates;
+		size_t g_roadCursor{};
+		double g_roadScanAt{};
+		RE::NiPoint3 g_roadPreviousPosition{};
+		bool g_roadHavePosition{};
+		uint32_t g_roadsLogged{};
 		std::vector<float> g_roofDisplay, g_capDisplay;
 		std::vector<uint8_t> g_roofVisible, g_capVisible;
 		bool g_transition{ false };
@@ -80,6 +95,15 @@ namespace Shelter
 			g_smooth.assign(total, 0);
 			g_cap.assign(total, 255);
 			g_capSmooth.assign(total, 255);
+			g_roads.assign(total, 0);
+			g_roadExpanded.assign(total, 255);
+			g_roadFeathered.assign(total, 255);
+			constexpr size_t roadTotal = SnowCoverage::kTexels * SnowCoverage::kTexels;
+			g_coverageRoadExpanded.assign(roadTotal, 255);
+			g_coverageRoadFeathered.assign(roadTotal, 255);
+			g_coverageRoadRows.assign(roadTotal, 0);
+			g_roadLand.resize(roadTotal);
+			g_roadRetryAt.assign(roadTotal, 0.0);
 			g_roofDisplay.assign(total, 0.0f);
 			g_capDisplay.assign(total, 255.0f);
 			g_roofVisible.assign(total, 0);
@@ -109,7 +133,7 @@ namespace Shelter
 		}
 
 		float RayHeight(RE::TES* a_tes, float a_worldX, float a_worldY, float a_landZ,
-			float a_fromAbove, float a_toAbove)
+			float a_fromAbove, float a_toAbove, const RE::hkpCollidable** a_hitObject = nullptr)
 		{
 			const float scale = RE::bhkWorld::GetWorldScale();
 
@@ -124,6 +148,7 @@ namespace Shelter
 			if (!pick.rayOutput.HasHit() || IsActorHit(pick.rayOutput.rootCollidable)) {
 				return -1.0f;
 			}
+			if (a_hitObject) { *a_hitObject = pick.rayOutput.rootCollidable; }
 
 			return a_fromAbove +
 				(a_toAbove - a_fromAbove) * std::clamp(pick.rayOutput.hitFraction, 0.0f, 1.0f);
@@ -136,20 +161,126 @@ namespace Shelter
 					   low + std::max(Settings::shelterHeight, 1.0f)) >= 0.0f;
 		}
 
-		uint8_t CapFor(RE::TES* a_tes, float a_worldX, float a_worldY, float a_landZ)
+		uint8_t CapFor(RE::TES* a_tes, float a_worldX, float a_worldY, float a_landZ, bool& a_road)
 		{
 			const float raise = std::max(Settings::snowRaiseHeight, 1.0f);
 
 			const float low = std::max(Settings::shelterFloorTolerance, 1.0f);
 			const float high = raise + low;
 
-			const float hit = RayHeight(a_tes, a_worldX, a_worldY, a_landZ, high, low);
-			if (hit < 0.0f) {
+			const RE::hkpCollidable* object = nullptr;
+			const float hit = RayHeight(a_tes, a_worldX, a_worldY, a_landZ, high,
+				Settings::excludeRoadSnow ? -8.0f : low, &object);
+			a_road = false;
+			if (Settings::excludeRoadSnow && object &&
+				(object->GetCollisionLayer() == RE::COL_LAYER::kStatic ||
+					object->GetCollisionLayer() == RE::COL_LAYER::kAnimStatic)) {
+				auto* ref = RE::TESHavokUtilities::FindCollidableRef(*object);
+				auto* base = ref ? ref->GetBaseObject() : nullptr;
+				auto* model = base ? base->As<RE::TESObjectSTAT>() : nullptr;
+				const char* path = model ? model->GetModel() : nullptr;
+				if (path && RoadSnowMask::IsRoadModel(path)) {
+					a_road = true;
+					if (g_roadsLogged < 16) {
+						++g_roadsLogged;
+						logger::info("Road snow exclusion: ref={:08X} model={} heightAboveLand={:.2f}",
+							ref->GetFormID(), path, hit);
+					}
+					return 0;
+				}
+			}
+			if (!object || hit < low) {
 				return 255;
 			}
 
 			return static_cast<uint8_t>(
 				std::clamp(hit / raise, 0.0f, 1.0f) * 255.0f + 0.5f);
+		}
+
+		void RememberRoad(int32_t x, int32_t y)
+		{
+			if (g_roadCache.Add(x, y)) {
+				++g_revision;
+				g_capDirty = true;
+			}
+		}
+
+		void DiscoverRoads(RE::TES* tes, RE::PlayerCharacter* player, const RE::NiPoint3& position, float delta)
+		{
+			if (!Settings::excludeRoadSnow || !Settings::shelterMeshCap || delta <= 0) { return; }
+			auto ahead = position;
+			if (g_roadHavePosition) {
+				const float dx = position.x - g_roadPreviousPosition.x, dy = position.y - g_roadPreviousPosition.y;
+				const float distance = std::hypot(dx, dy);
+				if (distance > 0.01f && distance < 256.0f) {
+					const float lead = std::min(distance / delta * 2.0f, 1536.0f);
+					ahead.x += dx / distance * lead; ahead.y += dy / distance * lead;
+				}
+			}
+			g_roadPreviousPosition = position; g_roadHavePosition = true;
+			if (g_roadCursor >= g_roadCandidates.size() && g_probeClock.now >= g_roadScanAt) {
+				g_roadCandidates.clear(); g_roadCursor = 0;
+				g_roadScanAt = g_probeClock.now + 0.5;
+				std::unordered_set<uint64_t> queued;
+				constexpr size_t limit = 8192;
+				tes->ForEachReferenceInRange(player, 6144.0f, [&](RE::TESObjectREFR* ref) {
+					if (g_roadCandidates.size() >= limit) { return RE::BSContainer::ForEachResult::kStop; }
+					if (!ref || ref->IsDisabled() || ref->IsMarkedForDeletion()) { return RE::BSContainer::ForEachResult::kContinue; }
+					auto* base = ref->GetBaseObject();
+					auto* model = base ? base->As<RE::TESObjectSTAT>() : nullptr;
+					const char* path = model ? model->GetModel() : nullptr;
+					auto* root = ref->Get3D();
+					if (!path || !root || !RoadSnowMask::IsRoadModel(path)) { return RE::BSContainer::ForEachResult::kContinue; }
+					const auto& bound = root->worldBound;
+					if (!std::isfinite(bound.radius) || bound.radius <= 0 || bound.radius > 2048.0f ||
+						!std::isfinite(bound.center.x) || !std::isfinite(bound.center.y)) { return RE::BSContainer::ForEachResult::kContinue; }
+					const int32_t x0 = static_cast<int32_t>(std::floor((bound.center.x - bound.radius) / kTexelSize));
+					const int32_t x1 = static_cast<int32_t>(std::floor((bound.center.x + bound.radius) / kTexelSize));
+					const int32_t y0 = static_cast<int32_t>(std::floor((bound.center.y - bound.radius) / kTexelSize));
+					const int32_t y1 = static_cast<int32_t>(std::floor((bound.center.y + bound.radius) / kTexelSize));
+					for (int32_t y = y0; y <= y1 && g_roadCandidates.size() < limit; ++y) {
+						for (int32_t x = x0; x <= x1 && g_roadCandidates.size() < limit; ++x) {
+							if (g_roadCache.Contains(x, y)) { continue; }
+							const auto i = RoadSnowMask::Cache<SnowCoverage::kTexels>::Index(x, y);
+							if (g_roadLand[i].Matches(x, y) && g_roadRetryAt[i] > g_probeClock.now) { continue; }
+							const uint64_t key = (uint64_t{static_cast<uint32_t>(x)} << 32) | static_cast<uint32_t>(y);
+							if (queued.insert(key).second) { g_roadCandidates.push_back({x, y}); }
+						}
+					}
+					return RE::BSContainer::ForEachResult::kContinue;
+				});
+				std::sort(g_roadCandidates.begin(), g_roadCandidates.end(), [&](const RoadCell& a, const RoadCell& b) {
+					const auto distance = [&](const RoadCell& c) {
+						const float x = (c.x + 0.5f) * kTexelSize - ahead.x, y = (c.y + 0.5f) * kTexelSize - ahead.y;
+						return x * x + y * y;
+					};
+					return distance(a) < distance(b);
+				});
+			}
+			uint32_t attempts = 0, rays = 0;
+			while (g_roadCursor < g_roadCandidates.size() && attempts < static_cast<uint32_t>(Settings::roadSnowProbeBudget)) {
+				const auto cell = g_roadCandidates[g_roadCursor++];
+				if (g_roadCache.Contains(cell.x, cell.y)) { continue; }
+				++attempts;
+				RE::NiPoint3 probe{(cell.x + 0.5f) * kTexelSize, (cell.y + 0.5f) * kTexelSize, position.z};
+				const auto i = RoadSnowMask::Cache<SnowCoverage::kTexels>::Index(cell.x, cell.y);
+				auto& land = g_roadLand[i];
+				float landZ{};
+				if (!land.Get(cell.x, cell.y, landZ)) {
+					Profiler::Tally(Profiler::Count::kShelterLandAttempts);
+					if (!tes->GetLandHeight(probe, landZ)) {
+						land.Miss(cell.x, cell.y, g_probeClock.now);
+						g_roadRetryAt[i] = g_probeClock.now + 0.5;
+						continue;
+					}
+					land.Store(cell.x, cell.y, landZ);
+				}
+				bool road = false;
+				CapFor(tes, probe.x, probe.y, landZ, road); ++rays;
+				g_roadRetryAt[i] = g_probeClock.now + 2.0;
+				if (road) { RememberRoad(cell.x, cell.y); }
+			}
+			Profiler::Tally(Profiler::Count::kShelterRays, rays);
 		}
 
 		void Smooth(const std::vector<uint8_t>& a_src, std::vector<uint8_t>& a_dst)
@@ -274,6 +405,17 @@ namespace Shelter
 		g_fadeCells.Reset(0);
 		g_cap.clear();
 		g_capSmooth.clear();
+		g_roads.clear();
+		g_roadExpanded.clear();
+		g_roadFeathered.clear();
+		g_coverageRoadExpanded.clear();
+		g_coverageRoadFeathered.clear();
+		g_coverageRoadRows.clear();
+		g_roadLand.clear();
+		g_roadRetryAt.clear();
+		g_roadCandidates.clear();
+		g_roadCache.Reset();
+		g_roadCursor = 0; g_roadScanAt = 0; g_roadHavePosition = false;
 		g_raw.clear();
 		g_smooth.clear();
 		g_rowSums.clear();
@@ -304,6 +446,13 @@ namespace Shelter
 		g_probeSettled = false;
 
 		std::fill(g_cap.begin(), g_cap.end(), static_cast<uint8_t>(255));
+		std::fill(g_roads.begin(), g_roads.end(), uint8_t{0});
+		g_roadCache.Reset();
+		std::fill(g_roadLand.begin(), g_roadLand.end(), ShelterProbe::LandCell{});
+		std::fill(g_roadRetryAt.begin(), g_roadRetryAt.end(), 0.0);
+		g_roadCandidates.clear();
+		g_roadCursor = 0; g_roadScanAt = 0; g_roadHavePosition = false;
+		g_roadsLogged = 0;
 		std::fill(g_raw.begin(), g_raw.end(), static_cast<uint8_t>(0));
 
 		g_transition = true;
@@ -359,7 +508,7 @@ namespace Shelter
 
 		const auto texel = [](uint32_t a_x, uint32_t a_y) {
 			return static_cast<float>(
-					   g_capVisible[(static_cast<size_t>(a_y) * kTexels) + a_x]) /
+					   g_capSmooth[(static_cast<size_t>(a_y) * kTexels) + a_x]) /
 			       255.0f;
 		};
 
@@ -403,8 +552,20 @@ namespace Shelter
 	{
 		static_assert(kTexelSize == SnowCoverage::kTexelSize);
 		const auto* roof = Settings::enableShelter && g_allocated && g_haveCentre ? g_smooth.data() : nullptr;
-		return CoverageShelter::Combine<SnowCoverage::kTexels, kTexels>(source, output,
+		const auto scaled = CoverageShelter::Combine<SnowCoverage::kTexels, kTexels>(source, output,
 			baseX, baseY, roof, g_centreCellX, g_centreCellY);
+		if (Settings::enableShelter && Settings::shelterMeshCap && Settings::excludeRoadSnow && g_allocated && g_haveCentre) {
+			constexpr uint32_t n = SnowCoverage::kTexels, mask = n - 1;
+			RoadSnowMask::Apply<n>(g_roadCache.Data(), output, g_coverageRoadExpanded.data(),
+				g_coverageRoadFeathered.data(), g_coverageRoadRows.data(), Settings::roadSnowMarginTexels,
+				[&](uint32_t i) {
+					const uint32_t tx = i & mask, ty = i / n;
+					const int32_t x = baseX + static_cast<int32_t>((tx - static_cast<uint32_t>(baseX)) & mask);
+					const int32_t y = baseY + static_cast<int32_t>((ty - static_cast<uint32_t>(baseY)) & mask);
+					return g_roadCache.Contains(x, y);
+				});
+		}
+		return scaled;
 	}
 
 	void InvalidateCPU()
@@ -442,6 +603,7 @@ namespace Shelter
 		if (moved) {
 			++g_revision;
 			g_probeSettled = false;
+			g_capDirty = true;
 		}
 		g_haveCentre = true;
 
@@ -454,6 +616,7 @@ namespace Shelter
 		const float delta = !paused && globals::game::deltaTime ? *globals::game::deltaTime : 0.0f;
 		const auto refresh = g_probeClock.Advance(delta,
 			static_cast<uint32_t>(std::max(Settings::shelterRefresh, 0)), total);
+		DiscoverRoads(tes, player, position, !paused && delta > 0 && delta < 0.25f ? delta : 0.0f);
 		for (uint32_t i = 0; i < refresh.cells; ++i) {
 			g_filledX[g_ageCursor] = -0x40000000;
 			g_ageCursor = (g_ageCursor + 1) % total;
@@ -512,7 +675,9 @@ namespace Shelter
 			}
 
 			if (raysPerCell == 2) {
-				const uint8_t cap = CapFor(tes, probe.x, probe.y, landZ);
+				bool road = false;
+				const uint8_t cap = CapFor(tes, probe.x, probe.y, landZ, road);
+				if (road) { RememberRoad(cellX, cellY); }
 
 				if (g_cap[index] != cap) {
 					g_cap[index] = cap;
@@ -561,6 +726,17 @@ namespace Shelter
 
 		if (g_capDirty && Settings::shelterMeshCap && !g_failed) {
 			Smooth(g_capVisible, g_capSmooth);
+			if (Settings::excludeRoadSnow) {
+				for (uint32_t i = 0; i < total; ++i) {
+					const uint32_t tx = i & kMask, ty = i / kTexels;
+					const int32_t x = baseX + static_cast<int32_t>((tx - static_cast<uint32_t>(baseX)) & kMask);
+					const int32_t y = baseY + static_cast<int32_t>((ty - static_cast<uint32_t>(baseY)) & kMask);
+					g_roads[i] = static_cast<uint8_t>(g_roadCache.Contains(x, y));
+				}
+				RoadSnowMask::Apply<kTexels>(g_roads.data(), g_capSmooth.data(),
+					g_roadExpanded.data(), g_roadFeathered.data(), g_rowSums.data(),
+					Settings::roadSnowMarginTexels, [](uint32_t) { return true; });
+			}
 			g_capDirty = false;
 			g_capUploadPending = true;
 		}
