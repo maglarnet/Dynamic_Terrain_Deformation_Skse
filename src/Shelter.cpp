@@ -40,10 +40,9 @@ namespace Shelter
 
 		std::vector<uint8_t> g_cap;
 		std::vector<uint8_t> g_capSmooth;
-		std::vector<uint8_t> g_roads, g_roadExpanded, g_roadFeathered;
+		std::vector<uint8_t> g_roads, g_roadExpanded;
 		RoadSnowMask::Cache<SnowCoverage::kTexels> g_roadCache;
-		std::vector<uint8_t> g_coverageRoadExpanded, g_coverageRoadFeathered;
-		std::vector<uint32_t> g_coverageRoadRows;
+		std::vector<uint8_t> g_coverageRoadExpanded;
 		std::vector<ShelterProbe::LandCell> g_roadLand;
 		std::vector<double> g_roadRetryAt;
 		struct RoadCell { int32_t x{}, y{}; };
@@ -97,11 +96,8 @@ namespace Shelter
 			g_capSmooth.assign(total, 255);
 			g_roads.assign(total, 0);
 			g_roadExpanded.assign(total, 255);
-			g_roadFeathered.assign(total, 255);
 			constexpr size_t roadTotal = SnowCoverage::kTexels * SnowCoverage::kTexels;
 			g_coverageRoadExpanded.assign(roadTotal, 255);
-			g_coverageRoadFeathered.assign(roadTotal, 255);
-			g_coverageRoadRows.assign(roadTotal, 0);
 			g_roadLand.resize(roadTotal);
 			g_roadRetryAt.assign(roadTotal, 0.0);
 			g_roofDisplay.assign(total, 0.0f);
@@ -407,10 +403,7 @@ namespace Shelter
 		g_capSmooth.clear();
 		g_roads.clear();
 		g_roadExpanded.clear();
-		g_roadFeathered.clear();
 		g_coverageRoadExpanded.clear();
-		g_coverageRoadFeathered.clear();
-		g_coverageRoadRows.clear();
 		g_roadLand.clear();
 		g_roadRetryAt.clear();
 		g_roadCandidates.clear();
@@ -557,7 +550,7 @@ namespace Shelter
 		if (Settings::enableShelter && Settings::shelterMeshCap && Settings::excludeRoadSnow && g_allocated && g_haveCentre) {
 			constexpr uint32_t n = SnowCoverage::kTexels, mask = n - 1;
 			RoadSnowMask::Apply<n>(g_roadCache.Data(), output, g_coverageRoadExpanded.data(),
-				g_coverageRoadFeathered.data(), g_coverageRoadRows.data(), Settings::roadSnowMarginTexels,
+				Settings::roadSnowMarginTexels, Settings::roadSnowSeamTexels,
 				[&](uint32_t i) {
 					const uint32_t tx = i & mask, ty = i / n;
 					const int32_t x = baseX + static_cast<int32_t>((tx - static_cast<uint32_t>(baseX)) & mask);
@@ -734,8 +727,8 @@ namespace Shelter
 					g_roads[i] = static_cast<uint8_t>(g_roadCache.Contains(x, y));
 				}
 				RoadSnowMask::Apply<kTexels>(g_roads.data(), g_capSmooth.data(),
-					g_roadExpanded.data(), g_roadFeathered.data(), g_rowSums.data(),
-					Settings::roadSnowMarginTexels, [](uint32_t) { return true; });
+					g_roadExpanded.data(), Settings::roadSnowMarginTexels, Settings::roadSnowSeamTexels,
+					[](uint32_t) { return true; });
 			}
 			g_capDirty = false;
 			g_capUploadPending = true;

@@ -2,9 +2,9 @@
 // Copyright (c) 2026 NearMidnightNow (NMN).
 #pragma once
 
-#include "BoxFilter.h"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -55,26 +55,38 @@ namespace RoadSnowMask
 
 	template <uint32_t N, class Valid>
 	void Apply(const uint8_t* roads, uint8_t* cap, uint8_t* expanded,
-		uint8_t* feathered, uint32_t* rowSums, int margin, Valid valid)
+		int margin, int seam, Valid valid)
 	{
 		static_assert(N > 8 && (N & (N - 1)) == 0);
 		constexpr uint32_t mask = N - 1;
 		std::fill_n(expanded, N * N, uint8_t{255});
-		margin = std::clamp(margin, 1, 3);
+		margin = std::clamp(margin, 0, 3);
+		seam = std::clamp(seam, 0, 8);
+		const int reach = margin + seam;
+		constexpr int stride = 23;
+		std::array<uint8_t, stride * stride> stencil{};
+		for (int dy = -reach; dy <= reach; ++dy) {
+			for (int dx = -reach; dx <= reach; ++dx) {
+				const float x = static_cast<float>(std::max(std::abs(dx) - margin, 0));
+				const float y = static_cast<float>(std::max(std::abs(dy) - margin, 0));
+				const float t = seam ? std::clamp(std::hypot(x, y) / seam, 0.0f, 1.0f) : 0.0f;
+				stencil[(dy + reach) * stride + dx + reach] = static_cast<uint8_t>(255.0f * t * t * (3.0f - 2.0f * t) + 0.5f);
+			}
+		}
 		for (uint32_t y = 0; y < N; ++y) {
 			for (uint32_t x = 0; x < N; ++x) {
 				const uint32_t i = y * N + x;
 				if (!roads[i] || !valid(i)) { continue; }
-				for (int dy = -margin; dy <= margin; ++dy) {
-					for (int dx = -margin; dx <= margin; ++dx) {
-						expanded[((y + dy) & mask) * N + ((x + dx) & mask)] = 0;
+				for (int dy = -reach; dy <= reach; ++dy) {
+					for (int dx = -reach; dx <= reach; ++dx) {
+						auto& value = expanded[((y + dy) & mask) * N + ((x + dx) & mask)];
+						value = std::min(value, stencil[(dy + reach) * stride + dx + reach]);
 					}
 				}
 			}
 		}
-		BoxFilter::Apply<N>(expanded, feathered, rowSums, 1);
 		for (uint32_t i = 0; i < N * N; ++i) {
-			cap[i] = std::min(cap[i], std::min(expanded[i], feathered[i]));
+			cap[i] = std::min(cap[i], expanded[i]);
 		}
 	}
 }

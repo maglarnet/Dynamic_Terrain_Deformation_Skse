@@ -906,20 +906,36 @@ int main(int argc, char** argv)
 			!RoadSnowMask::IsRoadModel("landscape/roads/roadstraight01_lod.nif"), "Road clutter and LOD exclusion");
 		{
 			constexpr uint32_t side = 16, count = side * side;
-			std::array<uint8_t, count> roads{}, caps{}, expanded{}, feathered{};
-			std::array<uint32_t, count> rows{};
+			std::array<uint8_t, count> roads{}, caps{}, expanded{};
 			roads[0] = 1; caps.fill(255);
-			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), feathered.data(), rows.data(), 1,
+			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), 0, 2,
+				[](uint32_t) { return true; });
+			Require(caps[0] == 0 && caps[1] > 0 && caps[1] < 255 && caps[2] == 255,
+				"Zero road margin must blend immediately beside detected road samples");
+			caps.fill(255);
+			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), 1, 2,
 				[](uint32_t) { return true; });
 			Require(caps[0] == 0 && caps[1] == 0 && caps[side - 1] == 0 && caps[count - 1] == 0,
 				"Road interior and edge margin must stay snow-free across texture wrap");
 			Require(caps[2] > 0 && caps[2] < 255 && caps[3] == 255, "Road edge feather must remain local");
+			caps.fill(255);
+			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), 1, 3, [](uint32_t) { return true; });
+			Require(caps[1] == 0 && caps[2] > 0 && caps[2] < caps[3] && caps[3] < caps[4] && caps[4] == 255,
+				"Road seam must ramp monotonically from the clear margin to full snow");
+			const auto narrow = caps;
+			caps.fill(255);
+			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), 1, 6, [](uint32_t) { return true; });
+			Require(caps[2] < narrow[2] && caps[4] < 255 && caps[7] == 255,
+				"Increasing RoadSnowSeamTexels must widen the transition without lifting the road interior");
+			caps.fill(255);
+			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), 1, 0, [](uint32_t) { return true; });
+			Require(caps[1] == 0 && caps[2] == 255, "Zero seam must give a hard edge outside the clear margin");
 			caps.fill(255); caps[7] = 42;
-			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), feathered.data(), rows.data(), 1,
+			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), 1, 3,
 				[](uint32_t) { return false; });
 			Require(caps[0] == 255 && caps[7] == 42, "Stale road cells must not affect a new window or unrelated mesh caps");
 			roads.fill(0); caps.fill(255);
-			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), feathered.data(), rows.data(), 1,
+			RoadSnowMask::Apply<side>(roads.data(), caps.data(), expanded.data(), 1, 3,
 				[](uint32_t) { return true; });
 			Require(std::all_of(caps.begin(), caps.end(), [](uint8_t value) { return value == 255; }),
 				"Empty road mask must preserve surrounding snow");
@@ -928,11 +944,10 @@ int main(int argc, char** argv)
 		{
 			RoadSnowMask::Cache<16> roads;
 			Require(roads.Add(-3, 5) && !roads.Add(-3, 5), "Road discoveries must persist and deduplicate");
-			std::array<uint8_t, 256> cover{}, expanded{}, feathered{};
-			std::array<uint32_t, 256> rows{};
+			std::array<uint8_t, 256> cover{}, expanded{};
 			for (int32_t baseX = -15; baseX <= -3; ++baseX) {
 				cover.fill(255);
-				RoadSnowMask::Apply<16>(roads.Data(), cover.data(), expanded.data(), feathered.data(), rows.data(), 1,
+				RoadSnowMask::Apply<16>(roads.Data(), cover.data(), expanded.data(), 1, 3,
 					[&](uint32_t i) {
 						const int32_t x = baseX + static_cast<int32_t>(((i & 15) - static_cast<uint32_t>(baseX)) & 15);
 						return roads.Contains(x, static_cast<int32_t>(i / 16));
