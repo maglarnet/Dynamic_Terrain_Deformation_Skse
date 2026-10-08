@@ -5,6 +5,7 @@
 
 #include "ActorShapes.h"
 #include "ActorCollisionCachePolicy.h"
+#include "ActorStampRange.h"
 #include "GatherSnapshotPolicy.h"
 #include "CollisionTraversal.h"
 #include "Clipmap.h"
@@ -311,8 +312,58 @@ namespace Clipmap
 			return true;
 		}
 
-		void CollectActors(std::vector<RE::ActorPtr>& a_out)
+		std::vector<RE::ActorHandle> g_extendedActors;
+		std::chrono::steady_clock::time_point g_extendedActorsAt{};
+		RE::NiPoint3 g_extendedActorAnchor{};
+		RE::FormID g_extendedActorWorld{};
+		float g_extendedActorRange{};
+
+		void ResetExtendedActors()
 		{
+			g_extendedActors.clear();
+			g_extendedActorsAt = {};
+			g_extendedActorWorld = 0;
+			g_extendedActorRange = 0;
+		}
+
+		void CollectActors(std::vector<RE::ActorPtr>& a_out, const RE::NiPoint3& anchor, float range)
+		{
+			if (Settings::enableExtendedActorRange) {
+				auto* player = globals::game::player;
+				auto* tes = RE::TES::GetSingleton();
+				auto* world = player ? player->GetWorldspace() : nullptr;
+				if (!player || !tes || !world) { ResetExtendedActors(); return; }
+				const auto now = std::chrono::steady_clock::now();
+				if (g_extendedActorWorld != world->GetFormID() || g_extendedActorRange != range ||
+					now - g_extendedActorsAt >= std::chrono::milliseconds(250) ||
+					anchor.GetSquaredDistance(g_extendedActorAnchor) >= 256.0f * 256.0f) {
+					g_extendedActors.clear();
+					tes->ForEachReferenceInRange(player, range, [&](RE::TESObjectREFR* ref) {
+						auto* actor = ref ? ref->As<RE::Actor>() : nullptr;
+						if (actor && actor->Is3DLoaded() && !actor->IsDisabled() && !actor->IsMarkedForDeletion()) {
+							g_extendedActors.push_back(actor->GetHandle());
+						}
+						return RE::BSContainer::ForEachResult::kContinue;
+					});
+					g_extendedActorsAt = now; g_extendedActorAnchor = anchor;
+					g_extendedActorWorld = world->GetFormID(); g_extendedActorRange = range;
+				}
+				static std::unordered_set<RE::FormID> seen;
+				seen.clear();
+				const auto append = [&](const RE::ActorHandle& handle) {
+					auto actor = handle.get();
+					if (actor && actor->Is3DLoaded() && !actor->IsDisabled() && !actor->IsMarkedForDeletion() &&
+						actor->GetWorldspace() == world && anchor.GetSquaredDistance(actor->GetPosition()) <= range * range &&
+						seen.insert(actor->GetFormID()).second) { a_out.push_back(actor); }
+				};
+				if (auto* lists = RE::ProcessLists::GetSingleton()) {
+					for (const auto& handle : lists->highActorHandles) { append(handle); }
+				}
+				for (const auto& handle : g_extendedActors) { append(handle); }
+				append(player->GetHandle());
+				return;
+			}
+			if (!g_extendedActors.empty() || g_extendedActorWorld) { ResetExtendedActors(); }
 			if (auto* lists = RE::ProcessLists::GetSingleton()) {
 				for (auto& handle : lists->highActorHandles) {
 					auto actor = handle.get();
@@ -669,14 +720,15 @@ namespace Clipmap
 			auto& actors = g_frameActors;
 			actors.clear();
 			MagicImpacts::Append(anchor, stamps);
-			CollectActors(actors);
+			const float maxDistance = ActorStampRange::Resolve(Settings::enableExtendedActorRange,
+				Settings::actorStampDistance, kWorldSize, WorldSizeFor(LevelCount() - 1));
+			CollectActors(actors, anchor, maxDistance);
 			if (actors.empty()) {
 
 				ObjectStamps::Append(a_deltaSeconds, anchor, stamps);
 				return stamps;
 			}
 
-			const float maxDistance = kWorldSize * 0.375f;
 			const float maxDistanceSq = maxDistance * maxDistance;
 
 			std::sort(actors.begin(), actors.end(),
@@ -714,6 +766,7 @@ namespace Clipmap
 			now - g_gatherTime < std::chrono::milliseconds(250) &&
 			!g_clearGather.load(std::memory_order_acquire)) { return; }
 		if (g_clearGather.exchange(false, std::memory_order_acq_rel)) {
+			ResetExtendedActors();
 			g_actorCollisions.clear();
 			g_actorMotion.clear();
 			g_snapshot.Reset();
@@ -1150,6 +1203,7 @@ namespace Clipmap
 		g_frameStamps.clear();
 		g_frameContacts.clear();
 		g_actorCollisions.clear();
+		ResetExtendedActors();
 		g_windowValid = false;
 		g_bootedRaces.clear();
 		for (auto& valid : g_prevWindowValid) {

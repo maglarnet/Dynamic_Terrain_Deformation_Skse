@@ -29,6 +29,7 @@
 #include "BloodDecalFilter.h"
 #include "ObjectStampFilter.h"
 #include "RoadSnowMask.h"
+#include "ActorStampRange.h"
 #include "TerrainCulling.h"
 #include "TerrainActivityPolicy.h"
 #include <limits>
@@ -945,6 +946,33 @@ int main(int argc, char** argv)
 		}
 		std::puts("PASS persistent road discoveries: moving windows, duplicate probes, negative coordinates, slot reuse and world reset");
 		Field field;
+		Require(ActorStampRange::Resolve(false, 2304, 1536, 6144) == 576, "Extended actor range must be off by default");
+		Require(ActorStampRange::Resolve(true, 2304, 1536, 6144) == 2304, "Extended actor range must use the outer field");
+		Require(ActorStampRange::Resolve(true, 10000, 1536, 6144) == 2304 &&
+			ActorStampRange::Resolve(true, 2304, 1536, 1536) == 576, "Actor range must respect actual clipmap coverage");
+		Require(ActorStampRange::Resolve(true, -1, 1536, 6144) == 576 &&
+			ActorStampRange::Resolve(true, std::numeric_limits<float>::infinity(), 1536, 6144) == 576,
+			"Invalid actor range must retain the ordinary safe range");
+		{
+			Params distant;
+			distant.stamps[0][0] = 60; distant.stampParams[0][3] = 0;
+			distant.stampMotion[0][2] = 1;
+			field.Clear(); field.Step(distant);
+			const auto fine = field.Read();
+			Require(std::all_of(fine.begin(), fine.end(), [](float v) { return v == 0; }),
+				"Distant actor must not wrap a dent into the fine field");
+			distant.window[2] = 4;
+			field.Clear(); field.Step(distant);
+			Require(field.Read()[15] < -0.1f && field.SnowAtOrigin() == 0,
+				"Outer field must store a distant actor dent at its actual location");
+			field.SaveCoarse(); field.Clear();
+			Params approach;
+			approach.window[0] = 60; approach.control[1] = 0;
+			approach.coarse[0] = 1; approach.coarse[1] = N * 4; approach.coarse[3] = 0;
+			field.Step(approach, true);
+			Require(field.Read()[60] < -0.1f, "Approaching a corpse must seed its existing outer dent into the fine field");
+		}
+		std::puts("PASS optional actor range: disabled defaults, coverage limits, distant snow dent and coarse-to-fine approach");
 		CheckDecayPrecision(field);
 		field.CheckTessellationResources();
 		field.CheckTerrainCulling();

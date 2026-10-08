@@ -32,6 +32,8 @@ namespace Settings
 	inline bool useClipmap{ true };
 
 	inline uint32_t clipmapLevels{ 2 };
+	inline bool enableExtendedActorRange{ false };
+	inline float actorStampDistance{ 2304.0f };
 
 	inline float clipmapSeedSmoothing{ 1.0f };
 

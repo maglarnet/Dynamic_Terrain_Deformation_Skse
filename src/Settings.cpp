@@ -4,6 +4,7 @@
 #include "PCH.h"
 
 #include "Clipmap.h"
+#include "ActorStampRange.h"
 #include "Settings.h"
 #include "Shelter.h"
 #include "SnowCoverage.h"
@@ -178,6 +179,10 @@ namespace Settings
 				Clamped(key, AsFloat(key, value, 2.0f), 1.0f, 2.0f));
 		} else if (key == "ClipmapSeedSmoothing") {
 			clipmapSeedSmoothing = Clamped(key, AsFloat(key, value, 1.0f), 0.0f, 16.0f);
+		} else if (key == "EnableExtendedActorRange") {
+			enableExtendedActorRange = AsBool(value);
+		} else if (key == "ActorStampDistance") {
+			actorStampDistance = Clamped(key, AsFloat(key, value, 2304.0f), 576.0f, 2304.0f);
 		} else if (key == "EnableTessellationBounds") {
 			enableTessellationBounds = AsBool(value);
 		} else if (key == "TessellationBoundDepth") {
@@ -647,6 +652,11 @@ namespace Settings
 			logger::info("  weather is ON but every consumer is neutral - the level will "
 						 "integrate and change nothing");
 		}
+
+		logger::info("Actor stamps: extendedRange={} requestedDistance={:.0f} effectiveDistance={:.0f} | loaded actors only, nearest first, 64 shared stamps",
+			enableExtendedActorRange, actorStampDistance,
+			ActorStampRange::Resolve(enableExtendedActorRange, actorStampDistance, Clipmap::kWorldSize,
+				Clipmap::WorldSizeFor(Clipmap::LevelCount() - 1)));
 
 		logger::info("Tessellation budget: bounds={} | blanket spacing={} | distant spacing={} | mark spacing={} | maxfactor={}; blanket floor v1",
 			enableTessellationBounds, tessellationBlanketSpacing, tessellationRaiseSpacing,
