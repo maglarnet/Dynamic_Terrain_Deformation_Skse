@@ -955,44 +955,48 @@ namespace Hooks
 		}
 		g_installed = true;
 
-		REL::Relocation<std::uintptr_t> lighting{ RE::VTABLE_BSLightingShader[0] };
-		BSLightingShader_SetupGeometry::func =
-			lighting.write_vfunc(0x6, BSLightingShader_SetupGeometry::thunk);
-		BSLightingShader_RestoreGeometry::func =
-			lighting.write_vfunc(0x7, BSLightingShader_RestoreGeometry::thunk);
-
-		REL::Relocation<std::uintptr_t> utility{ RE::VTABLE_BSUtilityShader[0] };
-		BSUtilityShader_SetupGeometry::func =
-			utility.write_vfunc(0x6, BSUtilityShader_SetupGeometry::thunk);
-		BSUtilityShader_RestoreGeometry::func =
-			utility.write_vfunc(0x7, BSUtilityShader_RestoreGeometry::thunk);
-
 		auto& trampoline = SKSE::GetTrampoline();
+		const auto runtime = REL::Module::get().version();
+		// Verified from the 1.7.104.0 EXE against the same call target in
+		// 1.6.640.0. Other 1.7 builds need their own executable audit.
+		const auto depthOffset = runtime == REL::Version{ 1, 7, 104, 0 } ?
+			0x3B3 : REL::Relocate(0x395, 0x395);
 		const auto renderDepthCall =
-			REL::RelocationID(35560, 36559).address() + REL::Relocate(0x395, 0x395);
+			REL::RelocationID(35560, 36559).address() + depthOffset;
+		const auto updateCall = REL::RelocationID(35551, 36544).address() + REL::Relocate(0x11F, 0x160);
+		logger::info("Terrain hook layout: runtime={} renderDepthOffset=0x{:X}", runtime.string(), depthOffset);
 
 		const auto opcode = *reinterpret_cast<const std::uint8_t*>(renderDepthCall);
 		if (opcode != 0xE8) {
 			logger::critical(
 				"Main_RenderDepth call site is not a call: expected E8 at {:X}, found "
 				"{:02X}. This build's offset does not fit this Skyrim version, so the "
-				"hook was NOT written and terrain deformation is off. Nothing has been "
-				"modified - the game is safe to play. An updated build is needed.",
+				"terrain geometry/update hooks were NOT installed and terrain deformation "
+				"is off. An updated build is needed.",
 				renderDepthCall, opcode);
 
 			Settings::enableTessellation = false;
 			return;
 		}
 
-		Main_RenderDepth::func =
-			trampoline.write_call<5>(renderDepthCall, Main_RenderDepth::thunk);
-
-		const auto updateCall = REL::RelocationID(35551, 36544).address() + REL::Relocate(0x11F, 0x160);
 		if (*reinterpret_cast<const std::uint8_t*>(updateCall) != 0xE8) {
 			logger::critical("Main_Update call site {:X} is not E8; terrain disabled because CPU gathering cannot be installed safely", updateCall);
 			Settings::enableTessellation = false;
 			return;
 		}
+		// Validate both required calls before changing geometry vtables or calls.
+		REL::Relocation<std::uintptr_t> lighting{ RE::VTABLE_BSLightingShader[0] };
+		BSLightingShader_SetupGeometry::func =
+			lighting.write_vfunc(0x6, BSLightingShader_SetupGeometry::thunk);
+		BSLightingShader_RestoreGeometry::func =
+			lighting.write_vfunc(0x7, BSLightingShader_RestoreGeometry::thunk);
+		REL::Relocation<std::uintptr_t> utility{ RE::VTABLE_BSUtilityShader[0] };
+		BSUtilityShader_SetupGeometry::func =
+			utility.write_vfunc(0x6, BSUtilityShader_SetupGeometry::thunk);
+		BSUtilityShader_RestoreGeometry::func =
+			utility.write_vfunc(0x7, BSUtilityShader_RestoreGeometry::thunk);
+		Main_RenderDepth::func =
+			trampoline.write_call<5>(renderDepthCall, Main_RenderDepth::thunk);
 		Main_Update::func = trampoline.write_call<5>(updateCall, Main_Update::thunk);
 		Clipmap::InstallActorCacheEvents();
 		logger::info("Installed Main_Update CPU gathering at {:X}; render consumes prepared stamps", updateCall);
@@ -1017,7 +1021,7 @@ namespace Hooks
 				logger::warn(
 					"Post-opaque call site is not a call: expected E8 at {:X}, found {:02X}. "
 					"This build's offset does not fit this Skyrim version, so the hook was NOT "
-					"written and kicked snow is off. Nothing has been modified, and terrain "
+					"written and kicked snow is off. Terrain "
 					"deformation is unaffected - it runs from a different call site that "
 					"installed normally.",
 					blendedDecalsCall, decalsOpcode);
