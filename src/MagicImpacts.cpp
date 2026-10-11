@@ -11,17 +11,19 @@
 #include "Weather.h"
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <mutex>
+#include <type_traits>
 
 namespace MagicImpacts
 {
 	namespace
 	{
 		using Clock = std::chrono::steady_clock;
-		enum class Kind { kProjectile, kShout, kExplosion };
+		enum class Kind { kProjectile, kShout, kExplosion, kArrow };
 		enum class Element { kForce, kFire, kFrost, kShock };
 		struct Event
 		{
@@ -39,6 +41,12 @@ namespace MagicImpacts
 		std::mutex g_lock;
 		std::atomic<bool> g_enabled{ false };
 		std::atomic<uint32_t> g_logged{};
+		std::atomic<uint32_t> g_arrowContactsLogged{};
+		std::atomic<uint32_t> g_arrowBuildsLogged{};
+		// Keep deduplication after draining the queue: embedded arrows can report
+		// more than one contact. Handles also distinguish recycled form IDs.
+		std::array<RE::ObjectRefHandle, 256> g_arrowSeen{};
+		size_t g_nextArrow{};
 		struct BlastSource
 		{
 			RE::FormID base{}, space{};
@@ -86,13 +94,16 @@ namespace MagicImpacts
 			return physical;
 		}
 
-		void Queue(Event event)
+		void Queue(Event event, RE::ObjectRefHandle arrow = {})
 		{
 			if (!TerrainActivity::Active() || !g_enabled.load(std::memory_order_relaxed) || !event.space ||
 				!Finite(event.position) || !Finite(event.direction)) { return; }
 			event.time = Clock::now();
 			const std::scoped_lock lock(g_lock);
-			if (!TerrainActivity::Active()) { return; }
+			if (!TerrainActivity::Active()) { return; }  // Recheck after waiting across an area transition.
+			if (event.kind == Kind::kArrow) {
+				if (!arrow || std::find(g_arrowSeen.begin(), g_arrowSeen.end(), arrow) != g_arrowSeen.end()) { return; }
+			}
 
 			for (size_t i = 0; i < g_count; ++i) {
 				const auto& previous = g_queue[(g_head + i) % g_queue.size()];
@@ -101,6 +112,7 @@ namespace MagicImpacts
 					previous.position.GetSquaredDistance(event.position) < 256.0f) { return; }
 			}
 			if (g_count == g_queue.size()) { return; }
+			if (event.kind == Kind::kArrow) { g_arrowSeen[g_nextArrow++ % g_arrowSeen.size()] = arrow; }
 			g_queue[(g_head + g_count++) % g_queue.size()] = event;
 		}
 
@@ -125,21 +137,43 @@ namespace MagicImpacts
 				const RE::NiPoint3& position, const RE::NiPoint3& velocity,
 				RE::hkpCollidable* collidable, int32_t arg6, uint32_t arg7)
 			{
+				if constexpr (std::is_same_v<T, RE::ArrowProjectile>) {
+					if (Settings::logMagicImpacts && g_arrowContactsLogged.fetch_add(1) < 48) {
+						logger::info("Arrow contact source={:08X} active={} enabled={} layer={} target={:08X} pos=({:.2f},{:.2f},{:.2f})",
+							projectile->GetFormID(), TerrainActivity::Active(), Settings::enableArrowImpacts,
+							collidable ? static_cast<int>(collidable->GetCollisionLayer()) : -1,
+							target ? target->GetFormID() : 0, position.x, position.y, position.z);
+					}
+				}
 				if (TerrainActivity::Active() && g_enabled.load(std::memory_order_relaxed)) {
-					auto* spell = projectile->GetProjectileRuntimeData().spell;
-					Element element{};
-					if (Classify(spell, element)) {
-						auto* blast = projectile->GetProjectileRuntimeData().explosion;
-						if (blast) {
+					if constexpr (std::is_same_v<T, RE::ArrowProjectile>) {
+						// Collision identity is decisive; height alone would dent the
+						// landscape underneath nearby rocks, buildings or actors.
+						// Skyrim also reports landscape as kGround with no reference
+						// target. Build validates contact height against that landscape.
+						if (Settings::enableArrowImpacts && collidable &&
+							(collidable->GetCollisionLayer() == RE::COL_LAYER::kTerrain ||
+								(collidable->GetCollisionLayer() == RE::COL_LAYER::kGround && !target)) &&
+							(!target || !target->As<RE::Actor>())) {
+							Queue({ Kind::kArrow, Element::kForce, position, velocity,
+								projectile->GetFormID(), Space(projectile) }, projectile->CreateRefHandle());
+						}
+					} else if (!projectile->As<RE::ArrowProjectile>()) {
+						auto* spell = projectile->GetProjectileRuntimeData().spell;
+						Element element{};
+						if (Classify(spell, element)) {
+							auto* blast = projectile->GetProjectileRuntimeData().explosion;
+							if (blast) {
 
-							const std::scoped_lock lock(g_lock);
-							g_blastSources[g_nextBlast++ % g_blastSources.size()] =
-								{ blast->GetFormID(), Space(projectile), position, element, Clock::now() };
-						} else {
+								const std::scoped_lock lock(g_lock);
+								g_blastSources[g_nextBlast++ % g_blastSources.size()] =
+									{ blast->GetFormID(), Space(projectile), position, element, Clock::now() };
+							} else {
 
-							Queue({ Kind::kProjectile, element, position, velocity,
-								projectile->GetFormID(), Space(projectile), 0.0f,
-								spell->GetSpellType() == RE::MagicSystem::SpellType::kVoicePower });
+								Queue({ Kind::kProjectile, element, position, velocity,
+									projectile->GetFormID(), Space(projectile), 0.0f,
+									spell->GetSpellType() == RE::MagicSystem::SpellType::kVoicePower });
+							}
 						}
 					}
 				}
@@ -149,7 +183,7 @@ namespace MagicImpacts
 			static void Install()
 			{
 				REL::Relocation<std::uintptr_t> table{ T::VTABLE[0] };
-				func = table.write_vfunc(0xBD, thunk);
+				func = table.write_vfunc(REL::Module::IsVR() ? 0xBE : 0xBD, thunk);
 			}
 		};
 
@@ -231,11 +265,51 @@ namespace MagicImpacts
 		{
 			auto* tes = RE::TES::GetSingleton();
 			auto* player = RE::PlayerCharacter::GetSingleton();
+			const bool traceArrow = event.kind == Kind::kArrow && Settings::logMagicImpacts &&
+				g_arrowBuildsLogged.fetch_add(1) < 48;
+			if (traceArrow) {
+				logger::info("Arrow gather source={:08X} space={:08X} playerSpace={:08X} distance={:.1f}",
+					event.source, event.space, Space(player), std::sqrt(anchor.GetSquaredDistance(event.position)));
+			}
 			if (!tes || event.space != Space(player) ||
 				anchor.GetSquaredDistance(event.position) > 2800.0f * 2800.0f) { return; }
 			float landZ{};
-			if (!tes->GetLandHeight(event.position, landZ)) { return; }
+			if (!tes->GetLandHeight(event.position, landZ)) {
+				if (traceArrow) { logger::info("Arrow rejected: landscape height unavailable"); }
+				return;
+			}
 			const float above = event.position.z - landZ;
+			if (event.kind == Kind::kArrow) {
+				if (traceArrow) { logger::info("Arrow terrain height={:.2f} contact delta={:.2f}", landZ, above); }
+				if (!Settings::enableArrowImpacts || std::abs(above) > 8.0f ||
+					out.size() >= Clipmap::kMaxStamps) { return; }
+				const auto ground = Surfaces::GroundAt(event.position);
+				const auto& response = ground.response;
+				if (traceArrow) {
+					logger::info("Arrow surface={} radiusScale={:.2f} depthScale={:.2f} radiusSetting={:.2f} depthSetting={:.2f}",
+						Surfaces::Name(ground.type), response.radiusScale, response.depthScale,
+						Settings::arrowImpactRadius, Settings::arrowImpactDepth);
+				}
+				if (ground.type == Surfaces::Type::kUnknown || ground.type == Surfaces::Type::kStone ||
+					!std::isfinite(response.radiusScale) || !std::isfinite(response.depthScale) ||
+					response.radiusScale <= 0 || response.depthScale <= 0 ||
+					Settings::arrowImpactRadius <= 0 || Settings::arrowImpactDepth <= 0) { return; }
+				Clipmap::Stamp stamp{};
+				stamp.x = event.position.x; stamp.y = event.position.y;
+				stamp.snow = ground.type == Surfaces::Type::kSnow;
+				// A few fine-level texels wide, independent of model bounds, arrow
+				// speed, snow blanket depth and the much larger magic settings.
+				stamp.radius = std::clamp(Settings::arrowImpactRadius * response.radiusScale, 3.0f, 12.0f);
+				stamp.depth = std::clamp(Settings::arrowImpactDepth * response.depthScale, 0.0f, 4.0f);
+				stamp.shoulder = 0.25f;
+				stamp.decay = std::clamp(Settings::stampDecayPerSecond * response.decayScale * Weather::DecayScale(), 0.0f, 0.9999f);
+				out.push_back(stamp);
+				if (Settings::logMagicImpacts && g_logged++ < 32) {
+					logger::info("Arrow landscape impact source={:08X} radius={:.1f} depth={:.1f}",
+						event.source, stamp.radius, stamp.depth);
+				}
+				return;
+			}
 			float reach = Settings::magicImpactRadius;
 			float depth = Settings::magicImpactDepth;
 			ImpactPatterns::Pattern pattern{};
@@ -329,8 +403,12 @@ namespace MagicImpacts
 		g_blastSources = {};
 		g_nextBlast = 0;
 		g_logged = 0;
+		g_arrowContactsLogged = 0;
+		g_arrowBuildsLogged = 0;
+		g_arrowSeen = {};
+		g_nextArrow = 0;
 		g_enabled.store(Settings::enableMagicImpacts || Settings::enableShoutImpacts ||
-			Settings::enableExplosionImpacts, std::memory_order_relaxed);
+			Settings::enableExplosionImpacts || Settings::enableArrowImpacts, std::memory_order_relaxed);
 	}
 
 	void Append(const RE::NiPoint3& anchor, std::vector<Clipmap::Stamp>& out)
@@ -358,6 +436,7 @@ namespace MagicImpacts
 	{
 		Reset();
 		ProjectileHit<RE::MissileProjectile>::Install();
+		ProjectileHit<RE::ArrowProjectile>::Install();
 		ProjectileHit<RE::BeamProjectile>::Install();
 		ProjectileHit<RE::FlameProjectile>::Install();
 		ProjectileHit<RE::ConeProjectile>::Install();
@@ -367,6 +446,6 @@ namespace MagicImpacts
 		if (auto* source = RE::ScriptEventSourceHolder::GetSingleton()) {
 			source->AddEventSink<RE::TESSpellCastEvent>(&g_castSink);
 		}
-		logger::info("Installed bounded projectile/explosion impacts and directional shout events");
+		logger::info("Installed bounded arrow landscape impacts, projectile/explosion impacts and directional shout events");
 	}
 }

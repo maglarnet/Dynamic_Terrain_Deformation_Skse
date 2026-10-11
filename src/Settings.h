@@ -231,6 +231,9 @@ namespace Settings
 	inline float heatMaxRadius{ 256.0f };
 
 	inline bool enableMagicImpacts{ true };
+	inline bool enableArrowImpacts{ true };
+	inline float arrowImpactRadius{ 6.0f };
+	inline float arrowImpactDepth{ 2.0f };
 	inline bool enableShoutImpacts{ true };
 	inline bool enableExplosionImpacts{ true };
 	inline float magicImpactRadius{ 36.0f };

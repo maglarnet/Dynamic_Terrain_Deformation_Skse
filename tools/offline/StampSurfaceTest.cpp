@@ -960,6 +960,35 @@ int main(int argc, char** argv)
 		field.CheckTerrainCulling();
 		field.CheckBlanketBudget();
 		CheckMagicPatterns(field);
+		// Exercise small rimless impact marks through the shipping GPU shader,
+		// including aggressive rim settings that must not enlarge an arrow dent.
+		for (bool snow : { false, true }) {
+			for (float radius : { 3.0f, 6.0f, 12.0f }) {
+				Params arrow;
+				arrow.stamps[0][2] = radius;
+				arrow.stamps[0][3] = 2.0f;
+				arrow.stampParams[0][0] = 0.25f;
+				arrow.stampParams[0][3] = 0;
+				arrow.stampMotion[0][2] = snow ? 1.0f : 0.0f;
+				arrow.control[3] = arrow.snowRim[0] = 4.0f;
+				field.Clear(); field.Step(arrow);
+				const auto dent = field.Read();
+				Require(*std::min_element(dent.begin(), dent.end()) < -0.1f, "Small arrow dent must remain visible");
+				for (int y = 0; y < N; ++y) {
+					for (int x = 0; x < N; ++x) {
+						const float value = dent[y * N + x];
+						Require(std::isfinite(value) && value >= -2.001f && value <= 0.001f, "Arrow dent exceeded depth or raised a rim");
+						const int dx = x < N / 2 ? x : x - N, dy = y < N / 2 ? y : y - N;
+						if (std::hypot(static_cast<float>(dx), static_cast<float>(dy)) > radius + 1.0f) {
+							Require(std::abs(value) < 0.001f, "Arrow dent escaped its small radius");
+						}
+					}
+				}
+				field.Step(arrow);
+				Require(field.Read() == dent, "Repeated arrow contact deepened the dent");
+			}
+		}
+		std::puts("PASS small arrow dents: visibility, radius, depth and repeated contact on snow and ground");
 		CheckGroundFloor(field);
 		field.Clear();
 		Params p;

@@ -285,6 +285,12 @@ namespace Settings
 		{
 		if (key == "EnableMagicImpacts") {
 			enableMagicImpacts = AsBool(value);
+		} else if (key == "EnableArrowImpacts") {
+			enableArrowImpacts = AsBool(value);
+		} else if (key == "ArrowImpactRadius") {
+			arrowImpactRadius = Clamped(key, AsFloat(key, value, 6.0f), 0.0f, 12.0f);
+		} else if (key == "ArrowImpactDepth") {
+			arrowImpactDepth = Clamped(key, AsFloat(key, value, 2.0f), 0.0f, 4.0f);
 		} else if (key == "EnableShoutImpacts") {
 			enableShoutImpacts = AsBool(value);
 		} else if (key == "EnableExplosionImpacts") {
