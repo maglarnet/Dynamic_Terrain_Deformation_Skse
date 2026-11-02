@@ -7,6 +7,13 @@
 #include "ShaderReflection.cpp"
 #include "Tessellation.cpp"
 
+namespace OpenShadersTerrain
+{
+	bool Required() { return false; }
+	bool CanTessellate() { return true; }
+	bool Query(ID3D11VertexShader*, CSPluginAPI::TerrainDepthOffset& offset) { offset = {}; return false; }
+}
+
 namespace ShaderRegistry
 {
 	Bytecode For(ID3D11VertexShader*) { return {}; }

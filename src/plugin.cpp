@@ -7,6 +7,7 @@
 #include "Globals.h"
 #include "Hooks.h"
 #include "MagicImpacts.h"
+#include "OpenShadersTerrain.h"
 #include "Settings.h"
 #include "ShaderRegistry.h"
 #include "SnowCoverage.h"
@@ -54,8 +55,13 @@ namespace
 			logger::error("ShaderRegistry: CreateVertexShader not hooked - draws under a "
 						  "replaced vertex shader cannot be resolved");
 		}
-		if (!ShaderRegistry::InstallContextObservers(globals::d3d::context)) {
+		const bool observersReady = ShaderRegistry::InstallContextObservers(globals::d3d::context);
+		OpenShadersTerrain::SetObserversReady(observersReady);
+		if (!observersReady) {
 			logger::error("Terrain blending: renderer context observers unavailable");
+			if (OpenShadersTerrain::Required()) {
+				logger::error("Terrain blending: landscape tessellation disabled because required API correction cannot follow shader changes");
+			}
 		}
 		logger::info("ShaderRegistry: {} vertex shader(s) recorded so far, {:.1f} MB of "
 					 "bytecode",
@@ -104,6 +110,15 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 	}
 
 	messaging->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
+		if (a_msg && a_msg->type == SKSE::MessagingInterface::kPostLoad) {
+			Settings::Load();
+			if (!OpenShadersTerrain::RegisterListener()) {
+				logger::warn("Terrain blending: API capability listener unavailable; Open Shaders will keep Terrain Blending disabled");
+			}
+		}
+		if (a_msg && a_msg->type == SKSE::MessagingInterface::kPostPostLoad) {
+			OpenShadersTerrain::Acquire();
+		}
 		if (a_msg && a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
 			OnDataLoaded();
 		}

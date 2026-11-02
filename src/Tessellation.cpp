@@ -15,6 +15,8 @@
 #include "TessellationResources.h"
 #include "TerrainBlendDiagnostics.h"
 #include "TerrainDepthBias.h"
+#include "TerrainDepthCorrection.h"
+#include "OpenShadersTerrain.h"
 #include "TerrainCulling.h"
 #include "TerrainProcessingGuard.h"
 
@@ -46,11 +48,17 @@ namespace Tessellation
 			return out;
 		}
 
+		bool CorrectsTerrainDepth(Mode a_mode)
+		{
+			return a_mode == Mode::kLandscape && (Settings::terrainBlendingCompatibility || OpenShadersTerrain::Required());
+		}
+
 		std::string EmitPrologue(bool a_displace, Mode a_mode)
 		{
 			std::string out =
 				"cbuffer PerFrame : register(b12)\n"
 				"{\n"
+				"\trow_major float4x4 CameraProj            : packoffset(c4);\n"
 				"\trow_major float4x4 CameraViewProj        : packoffset(c8);\n"
 				"\trow_major float4x4 CameraViewProjInverse : packoffset(c32);\n"
 
@@ -93,13 +101,14 @@ namespace Tessellation
 					kMaterialSlot);
 			}
 
+			out += TerrainDepthCorrection::source;
 			out +=
 				"float3 ReconstructWorld(float4 clipPosition)\n"
 				"{\n";
-			if (a_mode == Mode::kLandscape && Settings::terrainBlendingCompatibility) {
+			if (CorrectsTerrainDepth(a_mode)) {
 
 				out = "cbuffer TerrainDepthCorrection : register(b9) { float4 TerrainClipBias; };\n" + out;
-				out += "\tclipPosition.z -= TerrainClipBias.x;\n";
+				out += "\tclipPosition = RemoveTerrainDepthOffset(clipPosition, CameraProj, TerrainClipBias.xy);\n";
 			}
 			out +=
 				"\tfloat4 world = mul(CameraViewProjInverse, clipPosition);\n"
@@ -605,14 +614,19 @@ namespace Tessellation
 			const int prevWorldIdx = IndexOf(a_signature, "POSITION", 2);
 
 			const bool displace = wantDisplace && clipIdx >= 0;
+			const bool nearClip = CorrectsTerrainDepth(a_mode) && clipIdx == 0 && a_signature.elements.size() == 1;
 
 			std::string out;
-			out +=
+			if (nearClip) {
+				out += "struct DepthOut\n{\n\tfloat4 f0 : SV_POSITION;\n\tfloat nearClip : SV_ClipDistance0;\n};\n\n";
+			}
+			out += std::format(
 				"[domain(\"tri\")]\n"
-				"CP main(PatchConstants pc, float3 bary : SV_DomainLocation,\n"
+				"{} main(PatchConstants pc, float3 bary : SV_DomainLocation,\n"
 				"        const OutputPatch<CP, 3> patch)\n"
-				"{\n"
-				"\tCP o;\n";
+				"{{\n"
+				"\tCP o;\n",
+				nearClip ? "DepthOut" : "CP");
 
 			for (size_t i = 0; i < a_signature.elements.size(); ++i) {
 				const auto& e = a_signature.elements[i];
@@ -656,6 +670,15 @@ namespace Tessellation
 				}
 			}
 
+			if (nearClip) {
+				out +=
+					"\n\tDepthOut result;\n"
+					"\tresult.f0 = o.f0;\n"
+					"\tresult.nearClip = TerrainNearClipDistance(\n"
+					"\t\tRemoveTerrainDepthOffset(o.f0, CameraProj, TerrainClipBias.xy), CameraProj);\n"
+					"\treturn result;\n}\n";
+				return out;
+			}
 
 			out += "\treturn o;\n}\n";
 			return out;
@@ -852,6 +875,7 @@ namespace Tessellation
 		SavedResources g_bloodResources{};
 		ID3D11Buffer* g_biasBuffer{}, *g_savedBiasHS{}, *g_savedBiasDS{};
 		bool g_biasActive{};
+		float g_biasReverseZ{};
 		TerrainCulling::Bracket g_culling;
 		float g_biasValue{};
 		std::unordered_map<ID3D11VertexShader*, float> g_biasShaders;
@@ -903,6 +927,7 @@ namespace Tessellation
 		if (!Settings::enableTessellation || !globals::Ready()) {
 			return false;
 		}
+		if (a_mode == Mode::kLandscape && !OpenShadersTerrain::CanTessellate()) { return false; }
 
 		if (g_active) {
 			EndDraw();
@@ -955,7 +980,7 @@ namespace Tessellation
 												Profiler::Scope::kLandscape);
 
 		g_active = true;
-		if (a_mode == Mode::kLandscape && Settings::terrainBlendingCompatibility) {
+		if (a_mode == Mode::kLandscape && (Settings::terrainBlendingCompatibility || OpenShadersTerrain::Required())) {
 			if (!g_biasBuffer) {
 				D3D11_BUFFER_DESC desc{};
 				desc.ByteWidth = 16; desc.Usage = D3D11_USAGE_DEFAULT;
@@ -976,7 +1001,7 @@ namespace Tessellation
 			VertexShaderBound(context, vs);
 			if (vs) { vs->Release(); }
 		}
-		if (a_mode == Mode::kLandscape && Settings::terrainBlendingCompatibility && Settings::terrainBlendingCullBackfaces) {
+		if (a_mode == Mode::kLandscape && (Settings::terrainBlendingCompatibility || OpenShadersTerrain::Required()) && Settings::terrainBlendingCullBackfaces) {
 			g_culling.Begin(context);
 			ID3D11RasterizerState* state{}; context->RSGetState(&state);
 			context->RSSetState(state);
@@ -1032,7 +1057,17 @@ namespace Tessellation
 	{
 		if (context != globals::d3d::context || !g_biasActive || !g_active) { return; }
 		float bias = 0.0f;
-		if (shader) {
+		CSPluginAPI::TerrainDepthOffset offset{};
+		const bool fromAPI = OpenShadersTerrain::Query(shader, offset);
+		if (fromAPI) {
+			bias = offset.standardOffset;
+			static bool reported{};
+			if (bias != 0.0f && !reported) {
+				reported = true;
+				logger::info("Terrain blending: API shader offset={} reverse-Z-aware={}", bias, offset.reverseZ);
+			}
+		}
+		else if (shader) {
 			if (const auto it = g_biasShaders.find(shader); it != g_biasShaders.end()) {
 				bias = it->second;
 			} else if (const auto bytes = ShaderRegistry::For(shader)) {
@@ -1047,10 +1082,12 @@ namespace Tessellation
 				if (bias != 0) { logger::info("Terrain blending correction: validated CS offset shader recognized; clip bias={}", bias); }
 			}
 		}
-		if (bias != g_biasValue) {
-			const float data[4]{ bias, 0, 0, 0 };
+		const float reverseZ = static_cast<float>(offset.reverseZ);
+		if (bias != g_biasValue || reverseZ != g_biasReverseZ) {
+			const float data[4]{ bias, reverseZ, 0, 0 };
 			context->UpdateSubresource(g_biasBuffer, 0, nullptr, data, 0, 0);
 			g_biasValue = bias;
+			g_biasReverseZ = reverseZ;
 		}
 	}
 

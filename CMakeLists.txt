@@ -23,6 +23,7 @@ target_sources(${PROJECT_NAME} PRIVATE
     src/MagicImpacts.cpp
     src/Hooks.cpp
     src/ObjectStamps.cpp
+    src/OpenShadersTerrain.cpp
     src/Profiler.cpp
     src/ShaderReflection.cpp
     src/ShaderRegistry.cpp
@@ -72,9 +73,15 @@ endif()
 option(BUILD_OFFLINE_TOOLS "Build the offline shader generator" ON)
 
 if(BUILD_OFFLINE_TOOLS)
+    add_executable(TerrainDepthInteropTest tools/offline/TerrainDepthInteropTest.cpp)
+    target_include_directories(TerrainDepthInteropTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(TerrainDepthInteropTest PRIVATE cxx_std_23)
+    target_link_libraries(TerrainDepthInteropTest PRIVATE d3d11.lib d3dcompiler.lib)
+
     add_executable(ShaderGen tools/offline/ShaderGen.cpp)
 
     target_include_directories(ShaderGen PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/tools/offline
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     )

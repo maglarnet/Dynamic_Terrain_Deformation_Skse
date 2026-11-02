@@ -63,6 +63,10 @@ if exist "%BUILD%\StampSurfaceTest.exe" (
     "%BUILD%\StampSurfaceTest.exe" || exit /b 1
 )
 
+if exist "%BUILD%\TerrainDepthInteropTest.exe" (
+    "%BUILD%\TerrainDepthInteropTest.exe" || exit /b 1
+)
+
 echo.
 echo Done.
 endlocal
