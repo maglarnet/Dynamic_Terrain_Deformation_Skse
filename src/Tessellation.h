@@ -43,7 +43,6 @@ namespace Tessellation
 
 	bool Active();
 
-	void VertexShaderBound(ID3D11DeviceContext*, ID3D11VertexShader*);
 	ID3D11RasterizerState* RasterizerFor(ID3D11DeviceContext*, ID3D11RasterizerState*);
 
 	void Reset();

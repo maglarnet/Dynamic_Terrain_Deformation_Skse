@@ -14,7 +14,7 @@
 #include "Tessellation.h"
 #include "TessellationResources.h"
 #include "TerrainBlendDiagnostics.h"
-#include "TerrainDepthBias.h"
+#include "TerrainDepthCorrection.h"
 #include "TerrainCulling.h"
 #include "TerrainProcessingGuard.h"
 
@@ -51,8 +51,8 @@ namespace Tessellation
 			std::string out =
 				"cbuffer PerFrame : register(b12)\n"
 				"{\n"
+				"\trow_major float4x4 CameraProj            : packoffset(c4);\n"
 				"\trow_major float4x4 CameraViewProj        : packoffset(c8);\n"
-				"\trow_major float4x4 CameraViewProjInverse : packoffset(c32);\n"
 
 				"\tfloat4             CameraPosAdjust       : packoffset(c40);\n"
 				"};\n\n";
@@ -93,17 +93,11 @@ namespace Tessellation
 					kMaterialSlot);
 			}
 
+			out += TerrainDepthCorrection::source;
 			out +=
 				"float3 ReconstructWorld(float4 clipPosition)\n"
-				"{\n";
-			if (a_mode == Mode::kLandscape && Settings::terrainBlendingCompatibility) {
-
-				out = "cbuffer TerrainDepthCorrection : register(b9) { float4 TerrainClipBias; };\n" + out;
-				out += "\tclipPosition.z -= TerrainClipBias.x;\n";
-			}
-			out +=
-				"\tfloat4 world = mul(CameraViewProjInverse, clipPosition);\n"
-				"\treturn world.xyz / world.w;\n"
+				"{\n"
+				"\treturn CameraRelativeFromClip(clipPosition, CameraViewProj);\n"
 				"}\n\n";
 
 			if (a_displace) {
@@ -618,14 +612,20 @@ namespace Tessellation
 			const int prevWorldIdx = IndexOf(a_signature, "POSITION", 2);
 
 			const bool displace = wantDisplace && clipIdx >= 0;
+			const bool nearClip = a_mode == Mode::kLandscape && Settings::terrainBlendingCompatibility &&
+				clipIdx == 0 && a_signature.elements.size() == 1;
 
 			std::string out;
-			out +=
+			if (nearClip) {
+				out += "struct DepthOut\n{\n\tfloat4 f0 : SV_POSITION;\n\tfloat nearClip : SV_ClipDistance0;\n};\n\n";
+			}
+			out += std::format(
 				"[domain(\"tri\")]\n"
-				"CP main(PatchConstants pc, float3 bary : SV_DomainLocation,\n"
+				"{} main(PatchConstants pc, float3 bary : SV_DomainLocation,\n"
 				"        const OutputPatch<CP, 3> patch)\n"
-				"{\n"
-				"\tCP o;\n";
+				"{{\n"
+				"\tCP o;\n",
+				nearClip ? "DepthOut" : "CP");
 
 			for (size_t i = 0; i < a_signature.elements.size(); ++i) {
 				const auto& e = a_signature.elements[i];
@@ -669,6 +669,15 @@ namespace Tessellation
 				}
 			}
 
+			if (nearClip) {
+				out += std::format(
+					"\n\tDepthOut result;\n"
+					"\tresult.f0 = o.f0;\n"
+					"\tresult.nearClip = TerrainNearClipDistance(o.f0, {}, CameraViewProj, CameraProj);\n"
+					"\treturn result;\n}}\n",
+					displace ? "basePos + float3(0.0f, 0.0f, rise)" : "ReconstructWorld(o.f0)");
+				return out;
+			}
 
 			out += "\treturn o;\n}\n";
 			return out;
@@ -863,11 +872,7 @@ namespace Tessellation
 
 		SavedState g_saved{};
 		SavedResources g_bloodResources{};
-		ID3D11Buffer* g_biasBuffer{}, *g_savedBiasHS{}, *g_savedBiasDS{};
-		bool g_biasActive{};
 		TerrainCulling::Bracket g_culling;
-		float g_biasValue{};
-		std::unordered_map<ID3D11VertexShader*, float> g_biasShaders;
 		bool       g_active{ false };
 
 		Mode g_activeMode{ Mode::kLandscape };
@@ -968,34 +973,13 @@ namespace Tessellation
 												Profiler::Scope::kLandscape);
 
 		g_active = true;
-		if (a_mode == Mode::kLandscape && Settings::terrainBlendingCompatibility) {
-			if (!g_biasBuffer) {
-				D3D11_BUFFER_DESC desc{};
-				desc.ByteWidth = 16; desc.Usage = D3D11_USAGE_DEFAULT;
-				desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-				const float zero[4]{};
-				D3D11_SUBRESOURCE_DATA initial{}; initial.pSysMem = zero;
-				if (FAILED(globals::d3d::device->CreateBuffer(&desc, &initial, &g_biasBuffer))) {
-					logger::error("Terrain blending: correction buffer creation failed");
-					EndDraw(); return false;
-				}
-			}
-			context->HSGetConstantBuffers(9, 1, &g_savedBiasHS);
-			context->DSGetConstantBuffers(9, 1, &g_savedBiasDS);
-			context->HSSetConstantBuffers(9, 1, &g_biasBuffer);
-			context->DSSetConstantBuffers(9, 1, &g_biasBuffer);
-			g_biasActive = true;
-			ID3D11VertexShader* vs{}; context->VSGetShader(&vs, nullptr, nullptr);
-			VertexShaderBound(context, vs);
-			if (vs) { vs->Release(); }
-		}
 		if (a_mode == Mode::kLandscape && Settings::terrainBlendingCompatibility && Settings::terrainBlendingCullBackfaces) {
 			g_culling.Begin(context);
 			ID3D11RasterizerState* state{}; context->RSGetState(&state);
 			context->RSSetState(state);
 			if (state) { state->Release(); }
 		}
-		if (a_mode == Mode::kLandscape) { TerrainBlendDiagnostics::Begin(context, g_biasValue); }
+		if (a_mode == Mode::kLandscape) { TerrainBlendDiagnostics::Begin(context); }
 		return true;
 	}
 
@@ -1011,15 +995,8 @@ namespace Tessellation
 
 		auto* context = globals::d3d::context;
 
-		if (g_activeMode == Mode::kLandscape) { TerrainBlendDiagnostics::End(context, g_biasValue); }
+		if (g_activeMode == Mode::kLandscape) { TerrainBlendDiagnostics::End(context); }
 		g_culling.End(context);
-		if (g_biasActive) {
-			context->HSSetConstantBuffers(9, 1, &g_savedBiasHS);
-			context->DSSetConstantBuffers(9, 1, &g_savedBiasDS);
-			if (g_savedBiasHS) { g_savedBiasHS->Release(); g_savedBiasHS = nullptr; }
-			if (g_savedBiasDS) { g_savedBiasDS->Release(); g_savedBiasDS = nullptr; }
-			g_biasActive = false;
-		}
 		if (g_activeMode == Mode::kBloodDecal) {
 			g_bloodResources.Restore(context);
 		} else if (g_activeMode == Mode::kLandscape) {
@@ -1039,32 +1016,6 @@ namespace Tessellation
 		ReleaseSaved();
 		g_saved.topology = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
 		g_active = false;
-	}
-
-	void VertexShaderBound(ID3D11DeviceContext* context, ID3D11VertexShader* shader)
-	{
-		if (context != globals::d3d::context || !g_biasActive || !g_active) { return; }
-		float bias = 0.0f;
-		if (shader) {
-			if (const auto it = g_biasShaders.find(shader); it != g_biasShaders.end()) {
-				bias = it->second;
-			} else if (const auto bytes = ShaderRegistry::For(shader)) {
-				ID3DBlob* assembly{};
-				if (SUCCEEDED(D3DDisassemble(bytes.data, bytes.size, 0, nullptr, &assembly)) && assembly) {
-					bias = TerrainDepthBias::Recognize(std::string_view(
-						static_cast<const char*>(assembly->GetBufferPointer()), assembly->GetBufferSize()));
-					assembly->Release();
-				}
-
-				g_biasShaders.emplace(shader, bias);
-				if (bias != 0) { logger::info("Terrain blending correction: validated CS offset shader recognized; clip bias={}", bias); }
-			}
-		}
-		if (bias != g_biasValue) {
-			const float data[4]{ bias, 0, 0, 0 };
-			context->UpdateSubresource(g_biasBuffer, 0, nullptr, data, 0, 0);
-			g_biasValue = bias;
-		}
 	}
 
 	ID3D11RasterizerState* RasterizerFor(ID3D11DeviceContext* context, ID3D11RasterizerState* state)
@@ -1124,9 +1075,6 @@ namespace Tessellation
 	{
 		if (g_active) { EndDraw(); }
 		g_culling.Reset();
-		if (g_biasBuffer) { g_biasBuffer->Release(); g_biasBuffer = nullptr; }
-		g_biasValue = 0;
-		g_biasShaders.clear();
 		TerrainBlendDiagnostics::Reset();
 		const std::scoped_lock lock(g_cacheLock);
 		ShaderCompiler::GetWorker().CancelQueued();

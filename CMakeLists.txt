@@ -58,7 +58,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     minhook
     Microsoft::DirectXTK
     d3d11.lib
-    bcrypt.lib
     d3dcompiler.lib
     dxgi.lib
     dxguid.lib
@@ -72,6 +71,11 @@ endif()
 option(BUILD_OFFLINE_TOOLS "Build the offline shader generator" ON)
 
 if(BUILD_OFFLINE_TOOLS)
+    add_executable(TerrainDepthInteropTest tools/offline/TerrainDepthInteropTest.cpp)
+    target_include_directories(TerrainDepthInteropTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(TerrainDepthInteropTest PRIVATE cxx_std_23)
+    target_link_libraries(TerrainDepthInteropTest PRIVATE d3d11.lib d3dcompiler.lib)
+
     add_executable(ShaderGen tools/offline/ShaderGen.cpp)
 
     target_include_directories(ShaderGen PRIVATE
@@ -80,7 +84,7 @@ if(BUILD_OFFLINE_TOOLS)
     )
 
     target_compile_features(ShaderGen PRIVATE cxx_std_23)
-    target_link_libraries(ShaderGen PRIVATE d3dcompiler.lib dxguid.lib bcrypt.lib)
+    target_link_libraries(ShaderGen PRIVATE d3dcompiler.lib dxguid.lib)
 
     add_executable(StampSurfaceTest tools/offline/StampSurfaceTest.cpp)
     add_executable(TerrainProcessingGuardTest tools/offline/TerrainProcessingGuardTest.cpp)
@@ -89,8 +93,7 @@ if(BUILD_OFFLINE_TOOLS)
     target_link_libraries(TerrainProcessingGuardTest PRIVATE d3d11.lib d3dcompiler.lib)
     target_include_directories(StampSurfaceTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_features(StampSurfaceTest PRIVATE cxx_std_23)
-    target_compile_definitions(StampSurfaceTest PRIVATE TERRAIN_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tools/offline/fixtures")
-    target_link_libraries(StampSurfaceTest PRIVATE d3d11.lib d3dcompiler.lib bcrypt.lib)
+    target_link_libraries(StampSurfaceTest PRIVATE d3d11.lib d3dcompiler.lib)
 
     add_executable(LandscapeSamplingTest EXCLUDE_FROM_ALL tools/offline/LandscapeSamplingTest.cpp)
     target_compile_features(LandscapeSamplingTest PRIVATE cxx_std_23)

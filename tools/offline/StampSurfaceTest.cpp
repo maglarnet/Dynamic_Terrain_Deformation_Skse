@@ -28,7 +28,6 @@
 #include "TessellationResources.h"
 #include "BloodDecalFilter.h"
 #include "ObjectStampFilter.h"
-#include "TerrainDepthBias.h"
 #include "TerrainCulling.h"
 #include "TerrainActivityPolicy.h"
 #include <limits>
@@ -890,63 +889,6 @@ int main(int argc, char** argv)
 		Require(!BloodDecalFilter::Matches("blood/stone.dds", "blood"), "Blood directory alone does not match");
 		Require(!BloodDecalFilter::Matches("blood.dds.tmp", "blood"), "Blood extension must end the filename");
 		Require(!BloodDecalFilter::Matches("blood.dds", " , \t,"), "Empty prefixes match nothing");
-		Require(TerrainDepthBias::Fingerprint("abc") ==
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-            "SHA-256 standard vector");
-        Require(TerrainDepthBias::Instructions("// header\r\nvs_5_0  \r\nret\r\n// footer\n") == "vs_5_0\nret\n",
-            "Shader normalization excludes comments and normalizes whitespace");
-        Require(TerrainDepthBias::Recognize("vs_5_0\nret\n") == 0, "Unknown shaders remain uncorrected");
-        Require(TerrainDepthBias::Recognize("") == 0, "Missing shader remains uncorrected");
-		{
-			std::ifstream file(std::string(TERRAIN_TEST_FIXTURE_DIR) + "/cs191_offset_vs.asm", std::ios::binary);
-			Require(file.is_open(), "CS 1.9.1 shader fixture opens");
-			const std::string captured{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-			Require(TerrainDepthBias::Recognize(captured) == 5.0f, "CS 1.9.1 offset shader recognized");
-			auto changed = captured;
-			const auto offset = changed.find("5.000000");
-			Require(offset != std::string::npos, "CS 1.9.1 fixture has offset");
-			changed.replace(offset, 8, "6.000000");
-			Require(TerrainDepthBias::Recognize(changed) == 0, "Unverified offset remains uncorrected");
-			changed = captured;
-			const auto matrix = changed.find("cb12[10]");
-			Require(matrix != std::string::npos, "CS 1.9.1 fixture has projection row");
-			changed.replace(matrix, 8, "cb12[11]");
-			Require(TerrainDepthBias::Recognize(changed) == 0, "Unverified projection remains uncorrected");
-			Require(TerrainDepthBias::Recognize("// header\n" + captured + "// footer\n") == 5.0f,
-				"CS 1.9.1 comments do not change recognition");
-		}
-
-        if (argc > 1) {
-            std::ifstream file(argv[1], std::ios::binary);
-            Require(file.is_open(), "Local shader capture opens");
-            const std::string captured{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-            Require(TerrainDepthBias::Recognize(captured) == 10.0f, "Captured offset shader fingerprint matches");
-            auto changed = captured;
-            const auto offset = changed.find("10.000000");
-            Require(offset != std::string::npos, "Local capture has expected offset");
-            changed.replace(offset, 9, "5.000000");
-            Require(TerrainDepthBias::Recognize(changed) == 5.0f, "Validated CS 1.9.1 offset also recognized");
-            changed = captured;
-            const auto matrix = changed.find("cb12[10]");
-            Require(matrix != std::string::npos, "Local capture has expected matrix");
-            changed.replace(matrix, 8, "cb12[20]");
-            Require(TerrainDepthBias::Recognize(changed) == 0, "Different matrix remains uncorrected");
-            Require(TerrainDepthBias::Recognize("// reflection\n" + captured + "// footer\n") == 10.0f,
-                "Reflection comments do not change recognition");
-            std::puts("PASS local terrain shader fingerprint and variant isolation");
-        }
-
-		for (double nearPlane : { 5.0, 10.0, 15.0 }) {
-			const double farPlane = 10000.0, A = farPlane / (farPlane - nearPlane), B = -nearPlane * A;
-			for (double z : { 30.0, 300.0, 3000.0 }) {
-				const double clipZ = A * z + B, biasedZ = clipZ + 10.0;
-				const double inverseW = ((biasedZ - 10.0) - A * z) / B;
-				Require(std::abs(z / inverseW - z) < 0.00001, "Corrected world depth agrees with unbiased pass");
-				Require(std::abs(123.0 / inverseW - 123.0) < 0.00001, "Corrected world XY agrees with unbiased pass");
-				Require(std::abs(((biasedZ + A * 35.0) - (clipZ + A * 35.0)) - 10.0) < 0.00001, "Raster depth bias survives displacement");
-			}
-		}
-		std::puts("PASS captured terrain depth shader isolation and biased projection reconstruction");
 		Require(ObjectStampFilter::IsVisualBloodProjectile("SanguineSymphony\\Effects\\Default\\BloodSprayProjectileRegular.nif"), "Blood spray must not stamp snow");
 		Require(ObjectStampFilter::IsVisualBloodProjectile("SanguineSymphony/Effects/Insect/BLOODSPRAYPROJECTILESUBTLE.NIF"), "Insect spray and case handling");
 		Require(!ObjectStampFilter::IsVisualBloodProjectile("weapons/iron/ironarrow.nif"), "Arrow stamps preserved");

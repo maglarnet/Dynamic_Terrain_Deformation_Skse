@@ -63,8 +63,6 @@ namespace ShaderRegistry
 			}
 			native->Release();
 		}
-		using SetVSFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11VertexShader*, ID3D11ClassInstance* const*, UINT);
-		SetVSFn g_setVS{};
 		using SetRSFn = void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*, ID3D11RasterizerState*);
 		SetRSFn g_setRS{};
 		void STDMETHODCALLTYPE SetRS(ID3D11DeviceContext* context, ID3D11RasterizerState* state)
@@ -83,25 +81,6 @@ namespace ShaderRegistry
 				VirtualProtect(&table[43], sizeof(void*), protection, &protection);
 			} else { logger::error("Terrain blending: raster observer installation failed"); }
 		}
-		void STDMETHODCALLTYPE SetVS(ID3D11DeviceContext* context, ID3D11VertexShader* shader,
-			ID3D11ClassInstance* const* classes, UINT count)
-		{
-			g_setVS(context, shader, classes, count);
-			Tessellation::VertexShaderBound(context, shader);
-		}
-		void InstallVSObserver(ID3D11DeviceContext* context)
-		{
-			if (g_setVS || !context) { return; }
-
-			auto** table = *reinterpret_cast<void***>(context);
-			DWORD protection{};
-			if (VirtualProtect(&table[11], sizeof(void*), PAGE_READWRITE, &protection)) {
-				g_setVS = reinterpret_cast<SetVSFn>(table[11]);
-				table[11] = reinterpret_cast<void*>(&SetVS);
-				VirtualProtect(&table[11], sizeof(void*), protection, &protection);
-			} else { logger::error("Terrain blending: VS observer installation failed"); }
-		}
-
 		HRESULT STDMETHODCALLTYPE CreateVertexShaderDetour(ID3D11Device* a_self,
 			const void* a_bytecode, SIZE_T a_length, ID3D11ClassLinkage* a_linkage,
 			ID3D11VertexShader** a_shader)
@@ -244,12 +223,11 @@ namespace ShaderRegistry
 	bool InstallContextObservers(ID3D11DeviceContext* a_context)
 	{
 		if (!a_context) { return false; }
-		InstallVSObserver(a_context);
 		InstallRasterObserver(a_context);
 		InstallProcessingGuard(a_context);
-		logger::info("Terrain blending observers: renderer context={} VS installed={} raster installed={}",
-			static_cast<const void*>(a_context), g_setVS != nullptr, g_setRS != nullptr);
-		return g_setVS && g_setRS;
+		logger::info("Terrain blending observers: renderer context={} raster installed={}",
+			static_cast<const void*>(a_context), g_setRS != nullptr);
+		return g_setRS != nullptr;
 	}
 
 	bool Install(ID3D11Device* a_device)
