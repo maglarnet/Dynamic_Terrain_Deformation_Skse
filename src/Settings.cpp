@@ -228,6 +228,8 @@ namespace Settings
 				SnowCoverage::kWorldSize * 0.5f - SnowCoverage::kTexelSize * 4.0f);
 		} else if (key == "SnowRaiseFadeBand") {
 			snowRaiseFadeBand = Clamped(key, AsFloat(key, value, 4000.0f), 1.0f, 8192.0f);
+		} else if (key == "SnowRaiseCameraClearance") {
+			snowRaiseCameraClearance = Clamped(key, AsFloat(key, value, 20.0f), 1.0f, 256.0f);
 		} else if (key == "SnowCoverageBudget") {
 			snowCoverageBudget = static_cast<int>(
 				Clamped(key, AsFloat(key, value, 2048), 1.0f, 65536.0f));
@@ -645,9 +647,9 @@ namespace Settings
 			tessellationTargetSpacing, tessellationMaxFactor);
 
 		logger::info("Snow raise: enabled={} | height={} | weather={} | distance={} "
-					 "fade={} | coverage budget={}/frame",
+					 "fade={} | coverage budget={}/frame | camera clearance={}",
 			enableSnowRaise, snowRaiseHeight, snowRaiseWeather, snowRaiseDistance,
-			snowRaiseFadeBand, snowCoverageBudget);
+			snowRaiseFadeBand, snowCoverageBudget, snowRaiseCameraClearance);
 
 			if (enableStaticProbe) {
 				logger::warn("Trap 8 probe is ON: static meshes are routed through the hull "

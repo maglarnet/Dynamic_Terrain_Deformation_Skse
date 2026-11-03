@@ -168,6 +168,12 @@ namespace Tessellation
 							0.0f),
 						static_cast<float>(SnowCoverage::kTexels));
 
+					out += std::format(
+						"static const float kCameraClearance  = {:.4f}f;\n"
+						"static const float kCameraDuckInner  = 32.0f;\n"
+						"static const float kCameraDuckOuter  = 64.0f;\n\n",
+						Settings::snowRaiseCameraClearance);
+
 					if (Settings::shelterMeshCap) {
 						out += std::format(
 							"Texture2D<float> SnowMeshCapMap : register(t{0});\n"
@@ -233,8 +239,15 @@ namespace Tessellation
 							"\tlift = min(lift, cap * kRaiseHeight);\n\n";
 					}
 
+					// The camera collides with the ground under the raise; sink the raise
+					// around it so the near plane never cuts into snow. Eye is at the origin.
 					out +=
-						"\treturn lift * fade;\n"
+						"\tfloat raised = lift * fade;\n"
+						"\tconst float duck = 1.0f - smoothstep(kCameraDuckInner, kCameraDuckOuter,\n"
+						"\t\tlength(worldPosition.xy));\n"
+						"\traised = lerp(raised,\n"
+						"\t\tmin(raised, max(-kCameraClearance - worldPosition.z, 0.0f)), duck);\n"
+						"\treturn raised;\n"
 						"}\n\n";
 				}
 

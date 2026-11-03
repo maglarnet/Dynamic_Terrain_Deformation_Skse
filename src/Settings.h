@@ -57,6 +57,7 @@ namespace Settings
 
 	inline float snowRaiseDistance{ 7936.0f };
 	inline float snowRaiseFadeBand{ 4000.0f };
+	inline float snowRaiseCameraClearance{ 20.0f };
 
 	inline int snowCoverageBudget{ 2048 };
 
