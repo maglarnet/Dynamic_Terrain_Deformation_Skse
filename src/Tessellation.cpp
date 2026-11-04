@@ -7,6 +7,7 @@
 #include "Clipmap.h"
 #include "BlanketTessellation.h"
 #include "Globals.h"
+#include "PatchArea.h"
 #include "Profiler.h"
 #include "Settings.h"
 #include "Shelter.h"
@@ -314,7 +315,7 @@ namespace Tessellation
 			return out;
 		}
 
-		std::string EmitPatchConstants(bool a_tessellate)
+		std::string EmitPatchConstants(bool a_tessellate, Mode a_mode = Mode::kLandscape)
 		{
 			std::string out =
 				"struct PatchConstants\n"
@@ -419,14 +420,19 @@ namespace Tessellation
 				;
 			}
 
+			if (a_mode == Mode::kBloodDecal) { out += PatchArea::source; }
+
 			out +=
 				"PatchConstants PatchConstantFn(InputPatch<CP, 3> patch)\n"
 				"{\n"
 				"\tPatchConstants o;\n"
 				"\tconst float3 p0 = ReconstructWorld(patch[0].f0);\n"
 				"\tconst float3 p1 = ReconstructWorld(patch[1].f0);\n"
-				"\tconst float3 p2 = ReconstructWorld(patch[2].f0);\n\n"
+				"\tconst float3 p2 = ReconstructWorld(patch[2].f0);\n\n";
 
+			if (a_mode == Mode::kBloodDecal) { out += PatchArea::cull; }
+
+			out +=
 				"\to.edges[0] = EdgeFactor(p1, p2);\n"
 				"\to.edges[1] = EdgeFactor(p2, p0);\n"
 				"\to.edges[2] = EdgeFactor(p0, p1);\n"
@@ -772,7 +778,7 @@ namespace Tessellation
 
 			const std::string common = EmitStruct(a_signature) +
 			                           EmitPrologue(displace, a_mode) +
-			                           EmitPatchConstants(tessellate);
+			                           EmitPatchConstants(tessellate, a_mode);
 
 			const std::string hsSource = common + EmitHull(Settings::tessellationWinding);
 			const std::string dsSource = common + EmitDomain(a_signature, displace, a_mode);

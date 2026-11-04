@@ -171,7 +171,7 @@ namespace
 
 		const std::string common = Tessellation::EmitStruct(a_signature) +
 		                           Tessellation::EmitPrologue(displace, a_mode) +
-		                           Tessellation::EmitPatchConstants(tessellate);
+		                           Tessellation::EmitPatchConstants(tessellate, a_mode);
 
 		Check(common + Tessellation::EmitHull(Settings::tessellationWinding), "hs_5_0",
 			std::string(a_name) + "_hs", a_outDir);

@@ -8,6 +8,7 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <array>
+#include <format>
 #include <cstdio>
 #include <stdexcept>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "ShelterScan.h"
 #include "ShelterProbeCache.h"
 #include "BlanketTessellation.h"
+#include "PatchArea.h"
 #include "TessellationResources.h"
 #include "BloodDecalFilter.h"
 #include "ObjectStampFilter.h"
@@ -272,6 +274,131 @@ RWTexture2D<float> Result : register(u0);
 		}
 		Clear();
 		std::puts("PASS GPU blanket budget: empty snow, active marks, interpolation, off, caps and finer user baseline");
+	}
+
+	uint32_t PatchPixels(const std::vector<std::array<float, 3>>& a_points, bool a_cull)
+	{
+		const std::string common = R"(
+struct CP { float3 world : POSITION; };
+struct PatchConstants { float edges[3] : SV_TessFactor; float inside : SV_InsideTessFactor; };
+)";
+		std::string points;
+		for (const auto& p : a_points) { points += std::format("float3({},{},{}),", p[0], p[1], p[2]); }
+		const std::string vertex = common + std::format("static const float3 kPoints[{}] = {{ {} }};\n", a_points.size(), points) +
+			"CP main(uint id : SV_VertexID) { CP o; o.world = kPoints[id]; return o; }";
+		const std::string hull = common + PatchArea::source + R"(
+PatchConstants PatchConstantFn(InputPatch<CP, 3> patch)
+{
+	PatchConstants o;
+	const float3 p0 = patch[0].world;
+	const float3 p1 = patch[1].world;
+	const float3 p2 = patch[2].world;
+)" + (a_cull ? PatchArea::cull : "") + R"(
+	o.edges[0] = 32.0f;
+	o.edges[1] = 32.0f;
+	o.edges[2] = 32.0f;
+	o.inside   = 32.0f;
+	return o;
+}
+[domain("tri")] [partitioning("integer")] [outputtopology("triangle_cw")] [outputcontrolpoints(3)]
+[patchconstantfunc("PatchConstantFn")]
+CP main(InputPatch<CP, 3> patch, uint i : SV_OutputControlPointID) { return patch[i]; }
+)";
+		const std::string domain = common + R"(
+struct Out { float4 clip : SV_POSITION; };
+[domain("tri")]
+Out main(PatchConstants c, float3 b : SV_DomainLocation, const OutputPatch<CP, 3> p)
+{
+	float3 world = p[0].world * b.x + p[1].world * b.y + p[2].world * b.z;
+	world.z += 8.0f * sin(world.x * 0.2f);
+	Out o;
+	o.clip = float4(world.x / 256.0f, world.z / 256.0f, 0.5f, 1.0f);
+	return o;
+}
+)";
+		const std::string pixel = "float4 main() : SV_TARGET { return 1.0f; }";
+		const auto build = [](const std::string& a_source, const char* a_target) {
+			ComPtr<ID3DBlob> code, errors;
+			const auto hr = D3DCompile(a_source.data(), a_source.size(), "FlatPatchTest", nullptr, nullptr, "main", a_target, 0, 0, &code, &errors);
+			if (FAILED(hr) && errors) { std::fprintf(stderr, "%s\n", static_cast<const char*>(errors->GetBufferPointer())); }
+			Check(hr, "Compile flat patch test");
+			return code;
+		};
+		const auto vsCode = build(vertex, "vs_5_0"), hsCode = build(hull, "hs_5_0"), dsCode = build(domain, "ds_5_0"), psCode = build(pixel, "ps_5_0");
+		ComPtr<ID3D11VertexShader> vs;
+		ComPtr<ID3D11HullShader> hs;
+		ComPtr<ID3D11DomainShader> ds;
+		ComPtr<ID3D11PixelShader> ps;
+		Check(device->CreateVertexShader(vsCode->GetBufferPointer(), vsCode->GetBufferSize(), nullptr, &vs), "Flat patch VS");
+		Check(device->CreateHullShader(hsCode->GetBufferPointer(), hsCode->GetBufferSize(), nullptr, &hs), "Flat patch HS");
+		Check(device->CreateDomainShader(dsCode->GetBufferPointer(), dsCode->GetBufferSize(), nullptr, &ds), "Flat patch DS");
+		Check(device->CreatePixelShader(psCode->GetBufferPointer(), psCode->GetBufferSize(), nullptr, &ps), "Flat patch PS");
+		constexpr UINT size = 512;
+		D3D11_TEXTURE2D_DESC desc{};
+		desc.Width = desc.Height = size;
+		desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+		desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		desc.BindFlags = D3D11_BIND_RENDER_TARGET;
+		ComPtr<ID3D11Texture2D> target, staging;
+		Check(device->CreateTexture2D(&desc, nullptr, &target), "Flat patch target");
+		desc.BindFlags = 0;
+		desc.Usage = D3D11_USAGE_STAGING;
+		desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+		Check(device->CreateTexture2D(&desc, nullptr, &staging), "Flat patch readback");
+		ComPtr<ID3D11RenderTargetView> rtv;
+		Check(device->CreateRenderTargetView(target.Get(), nullptr, &rtv), "Flat patch view");
+		D3D11_RASTERIZER_DESC rasterDesc{};
+		rasterDesc.FillMode = D3D11_FILL_SOLID;
+		rasterDesc.CullMode = D3D11_CULL_NONE;
+		rasterDesc.DepthClipEnable = TRUE;
+		ComPtr<ID3D11RasterizerState> raster;
+		Check(device->CreateRasterizerState(&rasterDesc, &raster), "Flat patch raster");
+		const float black[4]{};
+		context->ClearRenderTargetView(rtv.Get(), black);
+		const D3D11_VIEWPORT viewport{ 0.0f, 0.0f, static_cast<float>(size), static_cast<float>(size), 0.0f, 1.0f };
+		context->RSSetViewports(1, &viewport);
+		context->RSSetState(raster.Get());
+		context->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
+		context->IASetInputLayout(nullptr);
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+		context->VSSetShader(vs.Get(), nullptr, 0);
+		context->HSSetShader(hs.Get(), nullptr, 0);
+		context->DSSetShader(ds.Get(), nullptr, 0);
+		context->PSSetShader(ps.Get(), nullptr, 0);
+		context->Draw(static_cast<UINT>(a_points.size()), 0);
+		context->VSSetShader(nullptr, nullptr, 0);
+		context->HSSetShader(nullptr, nullptr, 0);
+		context->DSSetShader(nullptr, nullptr, 0);
+		context->PSSetShader(nullptr, nullptr, 0);
+		context->RSSetState(nullptr);
+		ID3D11RenderTargetView* noTarget = nullptr;
+		context->OMSetRenderTargets(1, &noTarget, nullptr);
+		context->CopyResource(staging.Get(), target.Get());
+		D3D11_MAPPED_SUBRESOURCE mapped{};
+		Check(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Flat patch read");
+		uint32_t pixels = 0;
+		for (UINT y = 0; y < size; ++y) {
+			const auto* row = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(mapped.pData) + y * mapped.RowPitch);
+			for (UINT x = 0; x < size; ++x) { pixels += row[x] != 0; }
+		}
+		context->Unmap(staging.Get(), 0);
+		return pixels;
+	}
+	void CheckFlatPatches()
+	{
+		const std::vector<std::array<float, 3>> flat{ { -96, 0, 0 }, { 96, 0, 0 }, { 96, 0, 0 }, { -96, 0, 60 }, { 96, 0, 60 }, { -96, 0, 60 } };
+		const auto line = PatchPixels(flat, false);
+		Require(line > 100, "Control: a triangle with no area, lifted unevenly, must draw the line");
+		Require(PatchPixels(flat, true) == 0, "A triangle with no area is culled");
+		Require(PatchPixels({ { -96, 0, 0 }, { 96, 0, 0 }, { 96, 0.01f, 0.01f } }, true) == 0, "Rounding does not save a flat patch");
+		Require(PatchPixels({ { 5, 5, 5 }, { 5, 5, 5 }, { 5, 5, 5 } }, true) == 0, "A patch at one point is culled");
+		const std::vector<std::array<float, 3>> thin{ { -96, 0, -60 }, { 96, 0, -60 }, { 96, 0, -57 } };
+		const auto thinPixels = PatchPixels(thin, true);
+		Require(thinPixels > 0 && thinPixels == PatchPixels(thin, false), "A thin but real triangle still draws, the same");
+		const std::vector<std::array<float, 3>> little{ { 0, 0, 0 }, { 4, 0, 0 }, { 4, 0, 4 } };
+		const auto littlePixels = PatchPixels(little, true);
+		Require(littlePixels > 0 && littlePixels == PatchPixels(little, false), "A small real triangle still draws, the same");
+		std::printf("PASS flat patches: the pool line drew %u pixels without the cull and none with it; thin and small real triangles unchanged\n", line);
 	}
 
 	void SetFloorMaps(float a_cover, float a_cap)
@@ -1090,6 +1217,7 @@ int main(int argc, char** argv)
 		field.CheckTessellationResources();
 		field.CheckTerrainCulling();
 		field.CheckBlanketBudget();
+		field.CheckFlatPatches();
 		CheckMagicPatterns(field);
 		// Exercise small rimless impact marks through the shipping GPU shader,
 		// including aggressive rim settings that must not enlarge an arrow dent.
