@@ -40,6 +40,15 @@ These adaptations are distributed under GPL-3.0-only.
 The clipmap stamp-group rejection and coverage-overlap optimizations also
 follow ideas proposed by qtuna / Iwillbewarlock in their optimization work.
 
+ApocryphaRealm contributed Dynamic Bloodpool Framework pools on the deformed
+ground (issue #11). The pool checks in src/BloodDecals.cpp and
+src/BloodDecalFilter.h and the EnableBloodPools setting are from their
+Dynamic Terrain Deformation Bloodpool Patch, commit 3569900,
+https://github.com/ApocryphaRealm/DTDBloodpoolPatch
+Copyright (c) 2026 ApocryphaRealm. Distributed under GPL-3.0-only.
+The names of DBF's mesh nodes come from Seb263/SkyrimSE_DynamicBloodpoolFramework;
+no DBF code is included. Added November 4, 2026.
+
 Third-party dependencies remain under their respective licences. This project's
 licence does not replace the licences of those dependencies.
 

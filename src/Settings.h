@@ -279,6 +279,8 @@ namespace Settings
 
 	inline bool enableBloodDecals{ true };
 
+	inline bool enableBloodPools{ true };
+
 	inline bool bloodDecalsIgnoreShaderIdentity{ true };
 	inline std::string bloodDecalTexturePrefixes{ "blood,decalsblood,bigspatter" };
 

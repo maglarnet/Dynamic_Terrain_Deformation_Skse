@@ -891,6 +891,17 @@ int main(int argc, char** argv)
 		Require(!BloodDecalFilter::Matches("blood/stone.dds", "blood"), "Blood directory alone does not match");
 		Require(!BloodDecalFilter::Matches("blood.dds.tmp", "blood"), "Blood extension must end the filename");
 		Require(!BloodDecalFilter::Matches("blood.dds", " , \t,"), "Empty prefixes match nothing");
+		Require(BloodDecalFilter::IsPoolShapeName("Decal:01") && BloodDecalFilter::IsPoolShapeName("Decal:04") &&
+			BloodDecalFilter::IsPoolShapeName("DecalExt:01") && BloodDecalFilter::IsPoolShapeName("DecalExt:04"), "Both of the framework's pool layers");
+		Require(!BloodDecalFilter::IsPoolShapeName("") && !BloodDecalFilter::IsPoolShapeName("Decal") &&
+			!BloodDecalFilter::IsPoolShapeName("BloodDecal:01") && !BloodDecalFilter::IsPoolShapeName("NPC Body"), "Other shapes are not pools");
+		Require(BloodDecalFilter::IsPoolRootName("DynamicDecal") && !BloodDecalFilter::IsPoolRootName("Root") &&
+			!BloodDecalFilter::IsPoolRootName("RootExt") && !BloodDecalFilter::IsPoolRootName("NPC Root [Root]"), "Only the mesh's root marks a pool");
+		Require(BloodDecalFilter::PoolLiesOnLand(100, 100) && BloodDecalFilter::PoolLiesOnLand(106, 100) &&
+			BloodDecalFilter::PoolLiesOnLand(94, 100), "A pool near the land follows it");
+		Require(!BloodDecalFilter::PoolLiesOnLand(106.5f, 100) && !BloodDecalFilter::PoolLiesOnLand(93.5f, 100) &&
+			!BloodDecalFilter::PoolLiesOnLand(std::nanf(""), 100), "A pool on a rock or a bridge, or with no height, stays native");
+		std::puts("PASS Dynamic Bloodpool Framework pool identification and the land test");
 		Require(ObjectStampFilter::IsVisualBloodProjectile("SanguineSymphony\\Effects\\Default\\BloodSprayProjectileRegular.nif"), "Blood spray must not stamp snow");
 		Require(ObjectStampFilter::IsVisualBloodProjectile("SanguineSymphony/Effects/Insect/BLOODSPRAYPROJECTILESUBTLE.NIF"), "Insect spray and case handling");
 		Require(!ObjectStampFilter::IsVisualBloodProjectile("weapons/iron/ironarrow.nif"), "Arrow stamps preserved");
