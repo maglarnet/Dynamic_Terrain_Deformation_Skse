@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <chrono>
 #include <array>
+#include <algorithm>
 
 namespace BloodDecals
 {
@@ -22,11 +23,11 @@ namespace BloodDecals
 		std::unordered_set<std::string> reportedDrawTextures;
 		bool reportedDraw{}, reportedSkip{}, reportedStart{};
 		std::unordered_set<RE::BSTempEffect*> visited;
-		std::unordered_map<RE::BSGeometry*, bool> poolShapes;
-		uint32_t poolsReported{};
+		std::unordered_map<RE::NiNode*, bool> pools;
+		std::unordered_set<RE::NiNode*> reportedPools;
 
 		std::unordered_set<RE::BGSDecalNode*> observedNodes;
-		std::array<size_t, 6> lastCounts{};
+		std::array<size_t, 7> lastCounts{};
 		std::chrono::steady_clock::time_point nextCensus{};
 		const char* Diffuse(RE::BGSTextureSet* set)
 		{
@@ -61,18 +62,17 @@ namespace BloodDecals
 			auto* root = geometry->parent;
 			if (!root || !BloodDecalFilter::IsPoolRootName(root->name.c_str())) { return false; }
 
-			if (const auto it = poolShapes.find(geometry); it != poolShapes.end()) { return it->second; }
+			if (const auto it = pools.find(root); it != pools.end()) { return it->second; }
 
 			auto* tes = RE::TES::GetSingleton();
 			float landZ = 0.0f;
 			const auto& position = root->world.translate;
 			const bool hasLand = tes && tes->GetLandHeight(position, landZ);
 			const bool onLand = hasLand && BloodDecalFilter::PoolLiesOnLand(position.z, landZ);
-			poolShapes.emplace(geometry, onLand);
-			if (poolsReported < 32) {
-				++poolsReported;
-				logger::info("Blood pools: shape {} at ({:.0f}, {:.0f}, {:.1f}) land {} -> {}",
-					geometry->name.c_str(), position.x, position.y, position.z,
+			pools.emplace(root, onLand);
+			if (reportedPools.size() < 32 && reportedPools.insert(root).second) {
+				logger::info("Blood pools: pool at ({:.0f}, {:.0f}, {:.1f}) land {} -> {}",
+					position.x, position.y, position.z,
 					hasLand ? std::format("{:.1f}", landZ) : std::string("none"),
 					onLand ? "follows the ground" : "kept native");
 			}
@@ -132,10 +132,11 @@ namespace BloodDecals
 
 	void Update()
 	{
+		const auto poolsOnLand = static_cast<size_t>(std::ranges::count_if(pools, [](const auto& pool) { return pool.second; }));
 		targets.clear();
 		visited.clear();
 		observedNodes.clear();
-		poolShapes.clear();
+		pools.clear();
 		if (!Settings::enableBloodDecals || !Settings::enableTessellation || !Settings::useClipmap) { return; }
 		if (!reportedStart) {
 			reportedStart = true;
@@ -160,12 +161,12 @@ namespace BloodDecals
 			attached += effects.size();
 			for (const auto& effect : effects) { Observe(effect.get()); }
 		}
-		const std::array<size_t, 6> counts{ manager->decals.size(), manager->simpleDecals.size(),
-			manager->decalNodes.size(), attached, visited.size(), targets.size() };
+		const std::array<size_t, 7> counts{ manager->decals.size(), manager->simpleDecals.size(),
+			manager->decalNodes.size(), attached, visited.size(), targets.size(), poolsOnLand };
 		const auto now = std::chrono::steady_clock::now();
 		if (now >= nextCensus && (counts != lastCounts || nextCensus.time_since_epoch().count() == 0)) {
-			logger::info("Blood decals B4 census: direct={} simple={} nodes={} attached={} unique={} terrainTargets={}",
-				counts[0], counts[1], counts[2], counts[3], counts[4], counts[5]);
+			logger::info("Blood decals B4 census: direct={} simple={} nodes={} attached={} unique={} terrainTargets={} poolsOnLand={}",
+				counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6]);
 			lastCounts = counts;
 			nextCensus = now + std::chrono::seconds(5);
 		}
@@ -232,7 +233,7 @@ namespace BloodDecals
 	void Reset()
 	{
 		targets.clear(); reported.clear(); reportedDrawTextures.clear();
-		poolShapes.clear(); poolsReported = 0;
+		pools.clear(); reportedPools.clear();
 		visited.clear(); observedNodes.clear(); lastCounts = {}; nextCensus = {};
 		reportedDraw = reportedSkip = reportedStart = false;
 	}

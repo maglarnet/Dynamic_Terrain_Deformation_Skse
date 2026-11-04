@@ -505,7 +505,7 @@ namespace Profiler
 				logger::info("  Landscape depth   avg {:7.3f} ms  p95 {:7.3f}  max {:7.3f}",
 					g_landDepthMs.Avg(), g_landDepthMs.P95(), g_landDepthMs.peak);
 				logger::info("  Other routed      avg {:7.3f} ms  p95 {:7.3f}  max {:7.3f}   "
-							 "(static probe when on)",
+							 "(blood decals, pools, static probe when on)",
 					g_actorMs.Avg(), g_actorMs.P95(), g_actorMs.peak);
 
 				if (g_scopeDrops > 0) {
