@@ -77,7 +77,7 @@ namespace
 }
 
 SKSEPluginInfo(
-	.Version = REL::Version{ 0, 1, 0, 0 },
+	.Version = REL::Version{ 1, 3, 0, 0 },
 	.Name = "NMN_DeformableTerrain"sv,
 	.Author = "maglarnet"sv,
 	.RuntimeCompatibility = SKSE::VersionIndependence::AddressLibrary)

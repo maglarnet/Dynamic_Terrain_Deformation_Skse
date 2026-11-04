@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(NMN_DeformableTerrain VERSION 0.1.0 LANGUAGES CXX)
+project(NMN_DeformableTerrain VERSION 1.3.0 LANGUAGES CXX)
 
 option(ENABLE_SKYRIM_SE "Build Skyrim SE support" ON)
 option(ENABLE_SKYRIM_AE "Build Skyrim AE support" ON)
