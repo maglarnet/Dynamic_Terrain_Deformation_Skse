@@ -20,6 +20,7 @@ namespace BloodDecals
 
 		std::unordered_map<RE::BSGeometry*, RE::NiPointer<RE::BSTempEffect>> targets;
 		std::unordered_set<std::string> reported;
+		std::unordered_set<std::uintptr_t> reportedSets;
 		std::unordered_set<std::string> reportedDrawTextures;
 		bool reportedDraw{}, reportedSkip{}, reportedStart{};
 		std::unordered_set<RE::BSTempEffect*> visited;
@@ -27,7 +28,12 @@ namespace BloodDecals
 		std::unordered_set<RE::NiNode*> reportedPools;
 
 		std::unordered_set<RE::BGSDecalNode*> observedNodes;
-		std::array<size_t, 7> lastCounts{};
+		BloodDecalFilter::PointerWatch watch;
+		constexpr uint32_t kScanInterval = 60;
+		constexpr uint32_t kResolveRetries = 16;
+		uint32_t framesSinceScan{}, resolveRetries{}, scans{}, frames{};
+		bool unresolved{};
+		std::array<size_t, 9> lastCounts{};
 		std::chrono::steady_clock::time_point nextCensus{};
 		const char* Diffuse(RE::BGSTextureSet* set)
 		{
@@ -49,6 +55,9 @@ namespace BloodDecals
 		{
 			const auto* log = spdlog::default_logger_raw();
 			if (reported.size() >= 64 || !log || !log->should_log(spdlog::level::info)) { return; }
+			const auto seen = reinterpret_cast<std::uintptr_t>(kind.data()) ^ (reinterpret_cast<std::uintptr_t>(set) << 1);
+			if (reportedSets.contains(seen)) { return; }
+			reportedSets.insert(seen);
 			const char* path = Diffuse(set);
 			const std::string key = std::string(kind) + ":" + (path ? path : "");
 			if (reported.size() < 64 && reported.insert(key).second) {
@@ -92,6 +101,7 @@ namespace BloodDecals
 					return;
 				}
 
+				unresolved |= !decal->effect3D || !decal->avShape;
 				if (!decal->effect3D || !Terrain(decal->avShape.get()) ||
 					decal->effect3D->GetGeometryRuntimeData().skinInstance) {
 					Report("simple blood on non-terrain or unresolved receiver: native", decal->textureSet);
@@ -120,6 +130,7 @@ namespace BloodDecals
 				Report("unmatched secondary geometry texture: native", decal->texSet2);
 				return;
 			}
+			unresolved |= !decal->decal || !decal->attachedGeometry;
 			if (!decal->decal || !Terrain(decal->attachedGeometry.get()) ||
 				decal->decal->GetGeometryRuntimeData().skinInstance) {
 				Report("blood on non-terrain or unresolved receiver: native", decal->texSet);
@@ -128,16 +139,37 @@ namespace BloodDecals
 			targets.emplace(decal->decal.get(), RE::NiPointer<RE::BSTempEffect>(decal));
 			Report("terrain blood geometry identified", decal->texSet);
 		}
+		void ForgetScan()
+		{
+			targets.clear();
+			visited.clear();
+			observedNodes.clear();
+			watch.Clear();
+		}
+		void Scan(RE::BGSDecalManager& manager)
+		{
+			targets.clear();
+			visited.clear();
+			observedNodes.clear();
+			unresolved = false;
+			for (const auto& effect : manager.decals) { Observe(effect.get()); }
+			for (const auto& decal : manager.simpleDecals) { Observe(decal.get()); }
+			for (const auto& node : manager.decalNodes) {
+				if (!node || node->GetRuntimeData().isSkinned) { continue; }
+				observedNodes.insert(node.get());
+				for (const auto& effect : node->GetRuntimeData().decals) { Observe(effect.get()); }
+			}
+		}
 	}
 
 	void Update()
 	{
 		const auto poolsOnLand = static_cast<size_t>(std::ranges::count_if(pools, [](const auto& pool) { return pool.second; }));
-		targets.clear();
-		visited.clear();
-		observedNodes.clear();
 		pools.clear();
-		if (!Settings::enableBloodDecals || !Settings::enableTessellation || !Settings::useClipmap) { return; }
+		if (!Settings::enableBloodDecals || !Settings::enableTessellation || !Settings::useClipmap) {
+			ForgetScan();
+			return;
+		}
 		if (!reportedStart) {
 			reportedStart = true;
 			logger::info("Blood decals B4 enabled: direct lists and attached nodes, prefixes={}", Settings::bloodDecalTexturePrefixes);
@@ -145,28 +177,43 @@ namespace BloodDecals
 		auto* manager = RE::BGSDecalManager::GetSingleton();
 		if (!manager) {
 			if (reported.insert("no-manager").second) { logger::info("Blood decals B4: decal manager unavailable"); }
+			ForgetScan();
 			return;
 		}
-		for (const auto& effect : manager->decals) {
-			Observe(effect.get());
-		}
-		for (const auto& decal : manager->simpleDecals) {
-			Observe(decal.get());
-		}
-		size_t attached = 0;
+		watch.Begin();
+		for (const auto& effect : manager->decals) { watch.Note(effect.get()); }
+		for (const auto& decal : manager->simpleDecals) { watch.Note(decal.get()); }
+		size_t attached = 0, skinnedNodes = 0, skinnedDecals = 0;
 		for (const auto& node : manager->decalNodes) {
 			if (!node) { continue; }
-			observedNodes.insert(node.get());
-			const auto& effects = node->GetRuntimeData().decals;
+			const auto& runtime = node->GetRuntimeData();
+			const auto& effects = runtime.decals;
 			attached += effects.size();
-			for (const auto& effect : effects) { Observe(effect.get()); }
+			if (runtime.isSkinned) {
+				++skinnedNodes;
+				skinnedDecals += effects.size();
+				continue;
+			}
+			watch.Note(node.get());
+			for (const auto& effect : effects) { watch.Note(effect.get()); }
 		}
-		const std::array<size_t, 7> counts{ manager->decals.size(), manager->simpleDecals.size(),
-			manager->decalNodes.size(), attached, visited.size(), targets.size(), poolsOnLand };
+		const bool changed = watch.End();
+		const bool retry = unresolved && resolveRetries < kResolveRetries;
+		++frames;
+		if (changed || retry || ++framesSinceScan >= kScanInterval) {
+			resolveRetries = changed ? 0 : resolveRetries + 1;
+			framesSinceScan = 0;
+			++scans;
+			Scan(*manager);
+		}
+		const std::array<size_t, 9> counts{ manager->decals.size(), manager->simpleDecals.size(),
+			manager->decalNodes.size(), attached, visited.size(), targets.size(), poolsOnLand, skinnedNodes, skinnedDecals };
 		const auto now = std::chrono::steady_clock::now();
 		if (now >= nextCensus && (counts != lastCounts || nextCensus.time_since_epoch().count() == 0)) {
-			logger::info("Blood decals B4 census: direct={} simple={} nodes={} attached={} unique={} terrainTargets={} poolsOnLand={}",
-				counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6]);
+			logger::info("Blood decals B4 census: direct={} simple={} nodes={} attached={} unique={} terrainTargets={} poolsOnLand={} | "
+				"skipped skinned: nodes={} decals={} | scanned {} of {} frames",
+				counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6], counts[7], counts[8], scans, frames);
+			scans = frames = 0;
 			lastCounts = counts;
 			nextCensus = now + std::chrono::seconds(5);
 		}
@@ -232,9 +279,12 @@ namespace BloodDecals
 	}
 	void Reset()
 	{
-		targets.clear(); reported.clear(); reportedDrawTextures.clear();
+		ForgetScan();
+		reported.clear(); reportedSets.clear(); reportedDrawTextures.clear();
 		pools.clear(); reportedPools.clear();
-		visited.clear(); observedNodes.clear(); lastCounts = {}; nextCensus = {};
+		lastCounts = {}; nextCensus = {};
+		unresolved = false;
+		framesSinceScan = resolveRetries = scans = frames = 0;
 		reportedDraw = reportedSkip = reportedStart = false;
 	}
 }

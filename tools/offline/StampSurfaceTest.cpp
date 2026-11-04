@@ -902,6 +902,32 @@ int main(int argc, char** argv)
 		Require(!BloodDecalFilter::PoolLiesOnLand(106.5f, 100) && !BloodDecalFilter::PoolLiesOnLand(93.5f, 100) &&
 			!BloodDecalFilter::PoolLiesOnLand(std::nanf(""), 100), "A pool on a rock or a bridge, or with no height, stays native");
 		std::puts("PASS Dynamic Bloodpool Framework pool identification and the land test");
+		{
+			BloodDecalFilter::PointerWatch watch;
+			const int a{}, b{}, c{}, d{};
+			const auto pass = [&](std::initializer_list<const void*> run) {
+				watch.Begin();
+				for (const auto* pointer : run) { watch.Note(pointer); }
+				return watch.End();
+			};
+			Require(!pass({}), "An empty run after nothing is no change");
+			Require(pass({ &a, &b }), "A first sight is a change");
+			Require(!pass({ &a, &b }), "The same run is no change");
+			Require(pass({ &a, &b, &c }), "An added pointer is a change");
+			Require(!pass({ &a, &b, &c }), "The longer run is then remembered");
+			Require(pass({ &a, &c }), "A removed pointer is a change");
+			Require(pass({ &a, &d }), "A pointer replaced in its slot is a change");
+			Require(pass({ &d, &a }), "A new order is a change");
+			Require(pass({ &d }), "A shorter run is a change");
+			Require(pass({}), "An emptied run is a change");
+			Require(!pass({}), "It stays empty");
+			Require(pass({ &a, &b, &c, &d }), "It fills again");
+			Require(pass({ &a, &b, &c, &d }) == false, "Nothing moved yet");
+			Require(pass({ &a, &c, &b, &d }), "A moved pointer is a change");
+			watch.Clear();
+			Require(pass({ &a, &c, &b, &d }), "After Clear everything is new");
+			std::puts("PASS decal list watch: same, added, removed, replaced in place, reordered, emptied, cleared");
+		}
 		Require(ObjectStampFilter::IsVisualBloodProjectile("SanguineSymphony\\Effects\\Default\\BloodSprayProjectileRegular.nif"), "Blood spray must not stamp snow");
 		Require(ObjectStampFilter::IsVisualBloodProjectile("SanguineSymphony/Effects/Insect/BLOODSPRAYPROJECTILESUBTLE.NIF"), "Insect spray and case handling");
 		Require(!ObjectStampFilter::IsVisualBloodProjectile("weapons/iron/ironarrow.nif"), "Arrow stamps preserved");

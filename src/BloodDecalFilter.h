@@ -3,7 +3,9 @@
 // Portions copyright (c) 2026 ApocryphaRealm (DTDBloodpoolPatch commit 3569900).
 
 #pragma once
+#include <cstddef>
 #include <string_view>
+#include <vector>
 
 namespace BloodDecalFilter
 {
@@ -21,6 +23,41 @@ namespace BloodDecalFilter
 		const float gap = poolZ - landZ;
 		return gap <= kPoolLandTolerance && gap >= -kPoolLandTolerance;
 	}
+
+	class PointerWatch
+	{
+	public:
+		void Begin()
+		{
+			_at = 0;
+			_changed = false;
+		}
+		void Note(const void* a_pointer)
+		{
+			if (_at == _seen.size()) {
+				_seen.push_back(a_pointer);
+				_changed = true;
+			} else if (_seen[_at] != a_pointer) {
+				_seen[_at] = a_pointer;
+				_changed = true;
+			}
+			++_at;
+		}
+		bool End()
+		{
+			if (_at != _seen.size()) {
+				_seen.resize(_at);
+				_changed = true;
+			}
+			return _changed;
+		}
+		void Clear() { _seen.clear(); }
+
+	private:
+		std::vector<const void*> _seen;
+		size_t _at{};
+		bool _changed{};
+	};
 
 	inline bool Matches(std::string_view path, std::string_view prefixes)
 	{
