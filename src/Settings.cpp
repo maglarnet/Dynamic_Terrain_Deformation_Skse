@@ -277,7 +277,7 @@ namespace Settings
 		} else if (key == "ExcludeRoadSnow") {
 			excludeRoadSnow = AsBool(value);
 		} else if (key == "RoadSnowMarginTexels") {
-			roadSnowMarginTexels = Clamped(key, AsFloat(key, value, 0.0f), -3.0f, 3.0f);
+			roadSnowMarginTexels = Clamped(key, AsFloat(key, value, -1.0f), -3.0f, 3.0f);
 		} else if (key == "RoadSnowProbeBudget") {
 			roadSnowProbeBudget = static_cast<int>(Clamped(key, AsFloat(key, value, 24), 1.0f, 256.0f));
 		} else if (key == "RoadSnowSeamTexels") {
