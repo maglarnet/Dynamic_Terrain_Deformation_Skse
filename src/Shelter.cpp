@@ -166,7 +166,7 @@ namespace Shelter
 
 			const RE::hkpCollidable* object = nullptr;
 			const float hit = RayHeight(a_tes, a_worldX, a_worldY, a_landZ, high,
-				Settings::excludeRoadSnow ? -8.0f : low, &object);
+				Settings::excludeRoadSnow ? 0.0f : low, &object);
 			a_road = false;
 			if (Settings::excludeRoadSnow && object &&
 				(object->GetCollisionLayer() == RE::COL_LAYER::kStatic ||
@@ -182,7 +182,7 @@ namespace Shelter
 						logger::info("Road snow exclusion: ref={:08X} model={} heightAboveLand={:.2f}",
 							ref->GetFormID(), path, hit);
 					}
-					return 0;
+					return 255;
 				}
 			}
 			if (!object || hit < low) {
@@ -193,9 +193,27 @@ namespace Shelter
 				std::clamp(hit / raise, 0.0f, 1.0f) * 255.0f + 0.5f);
 		}
 
-		void RememberRoad(int32_t x, int32_t y)
+		uint8_t RoadCoverage(RE::TES* a_tes, int32_t a_cellX, int32_t a_cellY, float a_landZ, uint32_t& a_rays)
 		{
-			if (g_roadCache.Add(x, y)) {
+			uint32_t hits = 1;
+			for (const float ox : { 0.25f, 0.75f }) {
+				for (const float oy : { 0.25f, 0.75f }) {
+					const RE::NiPoint3 at{ (static_cast<float>(a_cellX) + ox) * kTexelSize,
+						(static_cast<float>(a_cellY) + oy) * kTexelSize, a_landZ };
+					float landZ = a_landZ;
+					if (!a_tes->GetLandHeight(at, landZ)) { landZ = a_landZ; }
+					bool road = false;
+					CapFor(a_tes, at.x, at.y, landZ, road);
+					++a_rays;
+					hits += road ? 1u : 0u;
+				}
+			}
+			return static_cast<uint8_t>((hits * 255u + 2u) / 5u);
+		}
+
+		void RememberRoad(int32_t x, int32_t y, uint8_t coverage)
+		{
+			if (g_roadCache.Add(x, y, coverage)) {
 				++g_revision;
 				g_capDirty = true;
 			}
@@ -254,7 +272,8 @@ namespace Shelter
 				});
 			}
 			uint32_t attempts = 0, rays = 0;
-			while (g_roadCursor < g_roadCandidates.size() && attempts < static_cast<uint32_t>(Settings::roadSnowProbeBudget)) {
+			const auto budget = static_cast<uint32_t>(Settings::roadSnowProbeBudget);
+			while (g_roadCursor < g_roadCandidates.size() && attempts < budget && rays < budget) {
 				const auto cell = g_roadCandidates[g_roadCursor++];
 				if (g_roadCache.Contains(cell.x, cell.y)) { continue; }
 				++attempts;
@@ -274,7 +293,7 @@ namespace Shelter
 				bool road = false;
 				CapFor(tes, probe.x, probe.y, landZ, road); ++rays;
 				g_roadRetryAt[i] = g_probeClock.now + 2.0;
-				if (road) { RememberRoad(cell.x, cell.y); }
+				if (road) { RememberRoad(cell.x, cell.y, RoadCoverage(tes, cell.x, cell.y, landZ, rays)); }
 			}
 			Profiler::Tally(Profiler::Count::kShelterRays, rays);
 		}
@@ -549,7 +568,7 @@ namespace Shelter
 			baseX, baseY, roof, g_centreCellX, g_centreCellY);
 		if (Settings::enableShelter && Settings::shelterMeshCap && Settings::excludeRoadSnow && g_allocated && g_haveCentre) {
 			constexpr uint32_t n = SnowCoverage::kTexels, mask = n - 1;
-			RoadSnowMask::Apply<n>(g_roadCache.Data(), output, g_coverageRoadExpanded.data(),
+			RoadSnowMask::ApplyToCoverage<n>(g_roadCache.Data(), output, g_coverageRoadExpanded.data(),
 				Settings::roadSnowMarginTexels, Settings::roadSnowSeamTexels,
 				[&](uint32_t i) {
 					const uint32_t tx = i & mask, ty = i / n;
@@ -620,7 +639,7 @@ namespace Shelter
 		static uint32_t reportedRays = 0, roofChanges = 0, capChanges = 0;
 		const uint32_t raysPerCell = Settings::shelterMeshCap && !g_failed ? 2u : 1u;
 		ShelterScan::Counts scan{};
-		uint32_t landQueries = 0, cachedHeights = 0;
+		uint32_t landQueries = 0, cachedHeights = 0, roadRays = 0;
 		if (!g_probeSettled || refresh.due) {
 			scan = ShelterScan::Run(g_cursor, total, budget, raysPerCell, [&](uint32_t index) {
 			const uint32_t tx = index & kMask;
@@ -670,7 +689,9 @@ namespace Shelter
 			if (raysPerCell == 2) {
 				bool road = false;
 				const uint8_t cap = CapFor(tes, probe.x, probe.y, landZ, road);
-				if (road) { RememberRoad(cellX, cellY); }
+				if (road && !g_roadCache.Contains(cellX, cellY)) {
+					RememberRoad(cellX, cellY, RoadCoverage(tes, cellX, cellY, landZ, roadRays));
+				}
 
 				if (g_cap[index] != cap) {
 					g_cap[index] = cap;
@@ -689,7 +710,7 @@ namespace Shelter
 		Profiler::Tally(Profiler::Count::kShelterLandAttempts, landQueries);
 		Profiler::Tally(Profiler::Count::kShelterLandCached, cachedHeights);
 		Profiler::Tally(Profiler::Count::kShelterLandMisses, scan.misses);
-		Profiler::Tally(Profiler::Count::kShelterRays, scan.rays);
+		Profiler::Tally(Profiler::Count::kShelterRays, scan.rays + roadRays);
 
 		if (g_transition) {
 			const float alpha = ShelterTransition::Alpha(delta);
@@ -724,7 +745,7 @@ namespace Shelter
 					const uint32_t tx = i & kMask, ty = i / kTexels;
 					const int32_t x = baseX + static_cast<int32_t>((tx - static_cast<uint32_t>(baseX)) & kMask);
 					const int32_t y = baseY + static_cast<int32_t>((ty - static_cast<uint32_t>(baseY)) & kMask);
-					g_roads[i] = static_cast<uint8_t>(g_roadCache.Contains(x, y));
+					g_roads[i] = g_roadCache.Coverage(x, y);
 				}
 				RoadSnowMask::Apply<kTexels>(g_roads.data(), g_capSmooth.data(),
 					g_roadExpanded.data(), Settings::roadSnowMarginTexels, Settings::roadSnowSeamTexels,

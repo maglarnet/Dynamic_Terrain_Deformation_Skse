@@ -87,8 +87,8 @@ namespace Settings
 
 	inline bool shelterMeshCap{ true };
 	inline bool excludeRoadSnow{ true };
-	inline int roadSnowMarginTexels{ 0 };
-	inline int roadSnowSeamTexels{ 3 };
+	inline float roadSnowMarginTexels{ 0.0f };
+	inline int roadSnowSeamTexels{ 1 };
 	inline int roadSnowProbeBudget{ 24 };
 
 	inline float shelterFloorTolerance{ 8.0f };
