@@ -24,14 +24,18 @@ Community Shaders (GPLv3)
 
   These provenance notices were added September 28, 2026.
 
-Open Shaders (GPLv3)
+Bottled Shaders and Open Shaders (GPLv3)
+  https://github.com/InTheBottle/Bottled-Shaders
   https://github.com/alandtse/open-shaders
 
   src/TerrainDepthCorrection.h solves the camera-relative position from clip
   x, y and w, so depth offsets such as Terrain Blending's cannot move it.
-  Alan Tse proposed this approach in alandtse/open-shaders#1069; Open Shaders'
-  Snow Deformation reconstructs positions the same way. The implementation is
-  NMN's; no Open Shaders code is copied. Added November 3, 2026.
+  The approach follows InTheBottle's Snow Deformation in Bottled Shaders,
+  commit 792018ae. Alan Tse, who is porting that feature to Open Shaders
+  (alandtse/open-shaders#1050), proposed it for this plugin in
+  alandtse/open-shaders#1069. The implementation is NMN's; no code from
+  either project is copied. Added November 3, 2026; source corrected
+  November 5, 2026.
 
 Iwillbewarlock / qtuna contributed the blood-decal performance fix (PR #5).
 The box filter in src/BoxFilter.h is adapted from their commit 426747c;
