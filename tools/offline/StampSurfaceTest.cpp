@@ -32,6 +32,7 @@
 #include "ObjectStampFilter.h"
 #include "RoadSnowMask.h"
 #include "ActorStampRange.h"
+#include "ActorSnowHeightMath.h"
 #include "TerrainCulling.h"
 #include "TerrainActivityPolicy.h"
 #include <limits>
@@ -911,6 +912,16 @@ void CheckCoverageCombine(bool timing)
 	}
 }
 
+static void TestActorSnowHeight()
+{
+	const float nan = std::numeric_limits<float>::quiet_NaN();
+	Require(ActorSnowHeightMath::Offset(110, 100, true) == 10, "Snow height is the surface above the root");
+	Require(ActorSnowHeightMath::Offset(110, 100, false) == 0, "No snow means no height");
+	Require(ActorSnowHeightMath::Offset(90, 100, true) == 0, "A surface below the root means no height");
+	Require(ActorSnowHeightMath::Offset(nan, 100, true) == 0, "A height that is not finite reads zero");
+	std::puts("PASS snow height: surface above the root, zero without snow, below the root or not finite");
+}
+
 int main(int argc, char** argv)
 {
 	try {
@@ -934,6 +945,7 @@ int main(int argc, char** argv)
 		Require(at30 > shelterBefore && at30 < 255, "Reversing a ray answer must not snap or overshoot");
 		Require(ShelterTransition::Alpha(std::numeric_limits<float>::quiet_NaN()) == 0, "Invalid delta must be ignored");
 		std::puts("PASS shelter transitions: frame rate, pause, reversal and invalid time");
+		TestActorSnowHeight();
 		TestShelterScan();
 		{
 			for (const int fps : { 30, 60, 144, 300 }) {

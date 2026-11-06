@@ -17,6 +17,7 @@ target_sources(${PROJECT_NAME} PRIVATE
     src/plugin.cpp
     src/BloodDecals.cpp
     src/ActorShapes.cpp
+    src/ActorSnowHeight.cpp
     src/Clipmap.cpp
     src/Globals.cpp
     src/HeatSources.cpp

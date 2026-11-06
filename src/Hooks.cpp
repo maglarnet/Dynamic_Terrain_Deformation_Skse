@@ -5,6 +5,7 @@
 
 #include "PCH.h"
 
+#include "ActorSnowHeight.h"
 #include "BloodDecals.h"
 #include "BloodRoutingGate.h"
 #include "Clipmap.h"
@@ -877,6 +878,7 @@ namespace Hooks
 				if (worldID != lastWorld) { city = TerrainActivity::IsCityWorld(world); lastWorld = worldID; }
 				if (!Settings::enableTessellation || !player ||
 					!player->Is3DLoaded() || !cell || cell->IsInteriorCell() || !world || city) {
+					ActorSnowHeight::Clear();
 					if (wasEligible) { Clipmap::InvalidateGather(); }
 					wasEligible = false;
 					return;
@@ -886,6 +888,7 @@ namespace Hooks
 				Shelter::UpdateCPU();
 				const float raw = globals::game::deltaTime ? *globals::game::deltaTime : 0.0f;
 				const bool paused = globals::game::ui && globals::game::ui->GameIsPaused();
+				if (!Settings::useClipmap || !Settings::enableSnowHeightVariable) { ActorSnowHeight::Clear(); }
 				if (Settings::useClipmap) {
 					Clipmap::GatherFrame(!paused && raw > 0.0f && raw < 0.25f ? raw : 0.0f);
 				}

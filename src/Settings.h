@@ -309,6 +309,9 @@ namespace Settings
 
 	inline bool profileDrawScopes{ false };
 
+	inline bool enableSnowHeightVariable{ true };
+	inline bool logSnowHeight{ false };
+
 	inline bool snowSparkle{ true };
 
 	inline float snowSparkleRate{ 1000.0f };

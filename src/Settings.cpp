@@ -372,6 +372,10 @@ namespace Settings
 			snowRevealStrength = std::clamp(AsFloat(key, value, 0.4f), 0.0f, 1.0f);
 		} else if (key == "SeasonalTextureSwap") {
 			seasonalTextureSwap = AsBool(value);
+		} else if (key == "EnableSnowHeightVariable") {
+			enableSnowHeightVariable = AsBool(value);
+		} else if (key == "LogSnowHeight") {
+			logSnowHeight = AsBool(value);
 		} else if (key == "SnowSparkle") {
 			snowSparkle = AsBool(value);
 		} else if (key == "SnowSparkleRate") {

@@ -4,6 +4,7 @@
 #include "PCH.h"
 
 #include "ActorShapes.h"
+#include "ActorSnowHeight.h"
 #include "ActorCollisionCachePolicy.h"
 #include "ActorStampRange.h"
 #include "GatherSnapshotPolicy.h"
@@ -737,10 +738,20 @@ namespace Clipmap
 					       anchor.GetSquaredDistance(a_rhs->GetPosition());
 				});
 
+			size_t dataCount = 0;
+			std::unordered_set<RE::FormID> dataActors;
 			for (const auto& actor : actors) {
-				AppendActorStamps(actor.get(), anchor, maxDistanceSq, stamps);
-				if (stamps.size() >= kMaxStamps) {
-					break;
+				if (Settings::enableSnowHeightVariable && dataCount < 128 &&
+					anchor.GetSquaredDistance(actor->GetPosition()) <= maxDistanceSq &&
+					actor->GetWorldspace() == globals::game::player->GetWorldspace() && !actor->IsDisabled() &&
+					!actor->IsMarkedForDeletion() && dataActors.insert(actor->GetFormID()).second) {
+					++dataCount;
+					if (ActorSnowHeight::Available(actor.get())) {
+						ActorSnowHeight::Publish(actor.get(), ActorSnowHeight::Resolve(actor.get()));
+					}
+				}
+				if (stamps.size() < kMaxStamps) {
+					AppendActorStamps(actor.get(), anchor, maxDistanceSq, stamps);
 				}
 			}
 
@@ -766,6 +777,7 @@ namespace Clipmap
 			now - g_gatherTime < std::chrono::milliseconds(250) &&
 			!g_clearGather.load(std::memory_order_acquire)) { return; }
 		if (g_clearGather.exchange(false, std::memory_order_acq_rel)) {
+			ActorSnowHeight::Clear();
 			ResetExtendedActors();
 			g_actorCollisions.clear();
 			g_actorMotion.clear();
@@ -783,9 +795,11 @@ namespace Clipmap
 		dirty.clear();
 		g_snapshot.Reset();
 		g_frameContacts.clear();
+		ActorSnowHeight::BeginFrame();
 		g_cacheHits = g_cacheBuilds = g_collisionReads = 0;
 		g_actorClock = ActorCollisionCachePolicy::Advance(g_actorClock, a_deltaSeconds);
 		GatherStamps(a_deltaSeconds);
+		ActorSnowHeight::EndFrame();
 		for (auto it = g_actorCollisions.begin(); it != g_actorCollisions.end();) {
 			it = it->second.seen != g_actorFrame ? g_actorCollisions.erase(it) : std::next(it);
 		}
