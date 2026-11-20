@@ -546,7 +546,8 @@ namespace Profiler
 				std::pair{ CpuScope::kSparkleUpdate, "Sparkle update CPU" },
 				std::pair{ CpuScope::kCoverageFilter, "Coverage filter CPU" },
 				std::pair{ CpuScope::kShelterFilter, "Shelter filter CPU" },
-				std::pair{ CpuScope::kCoverageCombine, "Coverage combine CPU" } }) {
+				std::pair{ CpuScope::kCoverageCombine, "Coverage combine CPU" },
+				std::pair{ CpuScope::kSnowMeshes, "Snow meshes CPU" } }) {
 				const auto& sample = g_cpuMs[static_cast<size_t>(scope)];
 				logger::info("  {:18} avg {:7.3f} ms  p95 {:7.3f}  max {:7.3f}",
 					name, sample.Avg(), sample.P95(), sample.peak);

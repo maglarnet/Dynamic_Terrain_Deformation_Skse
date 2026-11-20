@@ -5,6 +5,8 @@
 
 #include "ShaderReflection.h"
 
+namespace RE { class BSGeometry; }
+
 namespace Tessellation
 {
 
@@ -19,6 +21,7 @@ namespace Tessellation
 
 
 		kBloodDecal,
+		kAuthoredSnow,
 	};
 
 	bool WantsDisplacement(Mode a_mode);

@@ -5,6 +5,8 @@
 #include "ShaderCompiler.h"
 
 #include "Clipmap.h"
+#include "AuthoredSnowShaders.h"
+#include "MeshSnowSurface.h"
 #include "BlanketTessellation.h"
 #include "Globals.h"
 #include "PatchArea.h"
@@ -70,6 +72,7 @@ namespace Tessellation
 				"static const float kGradFlat      = 1.0e-4f;\n\n",
 				Settings::tessellationMaxFactor, Settings::tessellationTargetSpacing,
 				Settings::tessellationRaiseSpacing,
+				a_mode == Mode::kAuthoredSnow ? 0.0f :
 				a_mode == Mode::kStaticProbe ? Settings::staticProbeOffset :
 					Settings::debugWorldZOffset,
 				Settings::debugWaveAmplitude,
@@ -101,9 +104,25 @@ namespace Tessellation
 				"\treturn CameraRelativeFromClip(clipPosition, CameraViewProj);\n"
 				"}\n\n";
 
+			if (a_mode == Mode::kAuthoredSnow) {
+				out += AuthoredSnowShaders::Source();
+				return out;
+			}
+
 			if (a_displace) {
 
 				const bool field = a_mode == Mode::kLandscape || a_mode == Mode::kBloodDecal;
+				const bool gated = field && Settings::useClipmap && Settings::enableAuthoredMeshDeformation;
+				const char* const fineSample = gated ?
+					"GatedField(ClipmapHeight, ClipmapSurface, ClipmapSampler, xy / kClipmapWorldSize,\n"
+					"\t\t\t                  kFieldTexels, worldPosition.z + CameraPosAdjust.z, kSurfaceBand, true)" :
+					"ClipmapHeight.SampleLevel(ClipmapSampler,\n"
+					"\t\t                                             xy / kClipmapWorldSize, 0.0f)";
+				const char* const coarseSample = gated ?
+					"GatedField(ClipmapHeight1, ClipmapSurface1, ClipmapSampler, xy / kClipmapWorldSize1,\n"
+					"\t\t\t                  kFieldTexels, worldPosition.z + CameraPosAdjust.z, kSurfaceBand, true)" :
+					"ClipmapHeight1.SampleLevel(ClipmapSampler,\n"
+					"\t\t                                                xy / kClipmapWorldSize1, 0.0f)";
 
 				const char* const lift =
 					"\tfloat  d  = kLift;\n";
@@ -139,6 +158,17 @@ namespace Tessellation
 							"Texture2D<float> ClipmapHeight1 : register(t{});\n"
 							"static const float kClipmapWorldSize1 = {:.4f}f;\n\n",
 							Clipmap::kLevel1Slot, Clipmap::WorldSizeFor(1));
+					}
+
+					if (gated) {
+						out += std::format(
+							"Texture2D<float> ClipmapSurface : register(t{0});\n"
+							"Texture2D<float> ClipmapSurface1 : register(t{1});\n"
+							"static const float kFieldTexels = {2:.1f}f;\n"
+							"static const float kSurfaceBand = {3:.4f}f;\n",
+							Clipmap::kSurfaceSlot, Clipmap::kSurfaceSlot + 1,
+							static_cast<float>(Clipmap::kTexels), Settings::meshSnowHeightBand);
+						out += MeshSnowSurface::hlsl;
 					}
 				}
 
@@ -265,30 +295,29 @@ namespace Tessellation
 
 					if (Clipmap::LevelCount() > 1) {
 
-						out +=
+						out += std::format(
 							"\tconst float2 fromCentre1 = abs(xy - Window1.xy);\n"
 							"\tconst float  edgeDist1   = max(fromCentre1.x, fromCentre1.y);\n"
 							"\tconst float  inWindow1   = 1.0f - saturate(\n"
 							"\t\t(edgeDist1 - Window1.z) / max(Window1.w - Window1.z, 1e-3f));\n\n"
-							"\tif (inWindow1 > 0.0f) {\n"
+							"\tif (inWindow1 > 0.0f) {{\n"
 							"\t\tfloat fine = 0.0f;\n"
 							"\t\tfloat coarse = 0.0f;\n"
-							"\t\t[branch] if (inWindow > 0.0f) {\n"
-							"\t\t\tfine = ClipmapHeight.SampleLevel(ClipmapSampler,\n"
-							"\t\t                                             xy / kClipmapWorldSize, 0.0f);\n"
-							"\t\t}\n"
-							"\t\t[branch] if (inWindow < 1.0f) {\n"
-							"\t\t\tcoarse = ClipmapHeight1.SampleLevel(ClipmapSampler,\n"
-							"\t\t                                                xy / kClipmapWorldSize1, 0.0f);\n"
-							"\t\t}\n"
+							"\t\t[branch] if (inWindow > 0.0f) {{\n"
+							"\t\t\tfine = {};\n"
+							"\t\t}}\n"
+							"\t\t[branch] if (inWindow < 1.0f) {{\n"
+							"\t\t\tcoarse = {};\n"
+							"\t\t}}\n"
 							"\t\td += lerp(coarse, fine, inWindow) * inWindow1;\n"
-							"\t}\n";
+							"\t}}\n",
+							fineSample, coarseSample);
 					} else {
-						out +=
-							"\tif (inWindow > 0.0f) {\n"
-							"\t\td += ClipmapHeight.SampleLevel(ClipmapSampler,\n"
-							"\t\t                               xy / kClipmapWorldSize, 0.0f) * inWindow;\n"
-							"\t}\n";
+						out += std::format(
+							"\tif (inWindow > 0.0f) {{\n"
+							"\t\td += {} * inWindow;\n"
+							"\t}}\n",
+							fineSample);
 					}
 				} else if (field) {
 					out +=
@@ -323,6 +352,19 @@ namespace Tessellation
 				"\tfloat edges[3] : SV_TessFactor;\n"
 				"\tfloat inside   : SV_InsideTessFactor;\n"
 				"};\n\n";
+
+			if (a_mode == Mode::kAuthoredSnow) {
+				return out + R"(
+PatchConstants PatchConstantFn(InputPatch<CP,3> patch) {
+ PatchConstants o;
+ float3 a=ReconstructWorld(patch[0].f0),b=ReconstructWorld(patch[1].f0),c=ReconstructWorld(patch[2].f0);
+ o.edges[0]=MeshEdge(b,c); o.edges[1]=MeshEdge(c,a); o.edges[2]=MeshEdge(a,b);
+ float inside=MeshDetail(max(length(b-a),max(length(c-a),length(c-b))),
+  min(a.xy,min(b.xy,c.xy))+CameraPosAdjust.xy,max(a.xy,max(b.xy,c.xy))+CameraPosAdjust.xy);
+ o.inside=max(inside,max(o.edges[0],max(o.edges[1],o.edges[2]))); return o;
+}
+)";
+			}
 
 			if (!a_tessellate) {
 
@@ -667,6 +709,14 @@ namespace Tessellation
 					out += std::format("\to.f{0}.z += rise;\n", prevWorldIdx);
 				}
 
+				if (a_mode == Mode::kAuthoredSnow) {
+					bool tbn = true;
+					for (uint32_t i = 1; i <= 3; ++i) {
+						const int index = IndexOf(a_signature, "TEXCOORD", i);
+						tbn &= index >= 0 && a_signature.elements[index].hlslType == "float3";
+					}
+					if (tbn) { out += EmitNormalRecompute(a_signature); }
+				}
 				if (a_mode == Mode::kLandscape) {
 					out += EmitNormalRecompute(a_signature);
 					out += EmitBlendWeights(a_signature);
@@ -701,6 +751,7 @@ namespace Tessellation
 		std::unordered_map<uint64_t, Pair>    g_cache;
 		std::unordered_map<uint64_t, Pair>    g_probeCache;
 		std::unordered_map<uint64_t, Pair>    g_bloodCache;
+		std::unordered_map<uint64_t, Pair>    g_authoredCache;
 
 		std::unordered_map<uint64_t, Pair>& CacheFor(Mode a_mode)
 		{
@@ -709,6 +760,8 @@ namespace Tessellation
 				return g_probeCache;
 			case Mode::kBloodDecal:
 				return g_bloodCache;
+			case Mode::kAuthoredSnow:
+				return g_authoredCache;
 			default:
 				return g_cache;
 			}
@@ -943,7 +996,7 @@ namespace Tessellation
 		context->DSGetShader(&g_saved.ds, nullptr, nullptr);
 		context->GSGetShader(&g_saved.gs, nullptr, nullptr);
 		context->IAGetPrimitiveTopology(&g_saved.topology);
-		if (a_mode == Mode::kBloodDecal) { g_bloodResources.Capture(context); }
+		if (a_mode == Mode::kBloodDecal || a_mode == Mode::kAuthoredSnow) { g_bloodResources.Capture(context); }
 
 		context->GSSetShader(nullptr, nullptr, 0);
 
@@ -979,6 +1032,7 @@ namespace Tessellation
 												Profiler::Scope::kLandscape);
 
 		g_active = true;
+		if (a_mode == Mode::kAuthoredSnow) { Clipmap::BindMeshDomain(context); }
 		if (a_mode == Mode::kLandscape && Settings::terrainBlendingCompatibility && Settings::terrainBlendingCullBackfaces) {
 			g_culling.Begin(context);
 			ID3D11RasterizerState* state{}; context->RSGetState(&state);
@@ -1003,7 +1057,7 @@ namespace Tessellation
 
 		if (g_activeMode == Mode::kLandscape) { TerrainBlendDiagnostics::End(context); }
 		g_culling.End(context);
-		if (g_activeMode == Mode::kBloodDecal) {
+		if (g_activeMode == Mode::kBloodDecal || g_activeMode == Mode::kAuthoredSnow) {
 			g_bloodResources.Restore(context);
 		} else if (g_activeMode == Mode::kLandscape) {
 			if (Settings::useClipmap) {
@@ -1038,6 +1092,8 @@ namespace Tessellation
 	bool WantsDisplacement(Mode a_mode)
 	{
 		switch (a_mode) {
+		case Mode::kAuthoredSnow:
+			return Settings::useClipmap && Clipmap::Ready();
 		case Mode::kStaticProbe:
 			return Settings::staticProbeOffset != 0.0f;
 		case Mode::kLandscape:
@@ -1054,7 +1110,7 @@ namespace Tessellation
 	bool WantsSubdivision(Mode a_mode)
 	{
 
-		return (a_mode == Mode::kLandscape || a_mode == Mode::kBloodDecal) && WantsDisplacement(a_mode);
+		return (a_mode == Mode::kLandscape || a_mode == Mode::kBloodDecal || a_mode == Mode::kAuthoredSnow) && WantsDisplacement(a_mode);
 	}
 
 	void PrepareFrame()
@@ -1063,7 +1119,7 @@ namespace Tessellation
 		if (!globals::Ready()) { return; }
 		const int64_t started = Profiler::Ticks();
 		const std::scoped_lock lock(g_cacheLock);
-		for (auto* cache : { &g_cache, &g_probeCache, &g_bloodCache }) {
+		for (auto* cache : { &g_cache, &g_probeCache, &g_bloodCache, &g_authoredCache }) {
 
 			const bool waiting = std::any_of(cache->begin(), cache->end(), [](const auto& entry) {
 				return entry.second.pending &&
@@ -1084,7 +1140,7 @@ namespace Tessellation
 		TerrainBlendDiagnostics::Reset();
 		const std::scoped_lock lock(g_cacheLock);
 		ShaderCompiler::GetWorker().CancelQueued();
-		for (auto* cache : { &g_cache, &g_probeCache, &g_bloodCache }) {
+		for (auto* cache : { &g_cache, &g_probeCache, &g_bloodCache, &g_authoredCache }) {
 			for (auto& [desc, pair] : *cache) {
 				if (pair.hs) {
 					pair.hs->Release();

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "MeshSnowSurface.h"
 #include "Settings.h"
 
 #include <algorithm>
@@ -44,6 +45,9 @@ namespace Clipmap
 
 	inline constexpr uint32_t kLevel1Slot = 2;
 
+	inline constexpr uint32_t kSurfaceSlot = 4;
+	inline constexpr uint32_t kActivity1Slot = 1;
+
 	inline constexpr uint32_t kMaxStamps = 64;
 
 	static_assert((kTexels & (kTexels - 1)) == 0, "kTexels must be a power of two");
@@ -83,6 +87,11 @@ namespace Clipmap
 		float motionX{ 0.0f };
 		float motionY{ 0.0f };
 		bool snow{ false };
+
+		MeshSnowSurface::Kind surface{ MeshSnowSurface::Kind::kNone };
+		float z{ 0.0f };
+		float slopeX{ 0.0f };
+		float slopeY{ 0.0f };
 	};
 
 	bool Initialize();
@@ -102,6 +111,8 @@ namespace Clipmap
 
 	void BindDomain(ID3D11DeviceContext* a_context);
 	void UnbindDomain(ID3D11DeviceContext* a_context);
+	void BindMeshDomain(ID3D11DeviceContext* a_context);
+	bool MeshFieldReady();
 
 	bool GetWindow(float& a_centreX, float& a_centreY, float& a_halfExtent);
 }

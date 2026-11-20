@@ -238,6 +238,14 @@ namespace Settings
 		} else if (key == "SnowCoverageBudget") {
 			snowCoverageBudget = static_cast<int>(
 				Clamped(key, AsFloat(key, value, 2048), 1.0f, 65536.0f));
+		} else if (key == "EnableAuthoredMeshDeformation") {
+			enableAuthoredMeshDeformation = AsBool(value);
+		} else if (key == "AuthoredMeshContactClearance") {
+			authoredMeshContactClearance = Clamped(key, AsFloat(key, value, 16.0f), 0.0f, 128.0f);
+		} else if (key == "MeshSnowTextures") {
+			meshSnowTextures = Trim(value);
+		} else if (key == "MeshSnowHeightBand") {
+			meshSnowHeightBand = Clamped(key, AsFloat(key, value, 64.0f), 8.0f, 120.0f);
 		} else if (key == "EnableStaticProbe") {
 			enableStaticProbe = AsBool(value);
 		} else if (key == "StaticProbeOffset") {
@@ -665,6 +673,9 @@ namespace Settings
 			enableExtendedActorRange, actorStampDistance,
 			ActorStampRange::Resolve(enableExtendedActorRange, actorStampDistance, Clipmap::kWorldSize,
 				Clipmap::WorldSizeFor(Clipmap::LevelCount() - 1)));
+
+		logger::info("Snow meshes: enabled={} | name NMN_aSnow or textures [{}] | dents in the land's field within {:.0f} units of their surface",
+			enableAuthoredMeshDeformation, meshSnowTextures, meshSnowHeightBand);
 
 		logger::info("Tessellation budget: bounds={} | blanket spacing={} | distant spacing={} | mark spacing={} | maxfactor={}; blanket floor v1",
 			enableTessellationBounds, tessellationBlanketSpacing, tessellationRaiseSpacing,

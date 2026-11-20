@@ -56,6 +56,8 @@ namespace Surfaces
 	float MarkDepth(Type a_type, float a_ordinaryDepth, float a_sink, float a_worldX,
 		float a_worldY);
 
+	float AuthoredSnowMarkDepth(float a_ordinaryDepth);
+
 	float RimHeight(float a_markDepth, float a_rimScale);
 
 	bool MatchesKeywords(std::string_view a_name, std::string_view a_keywords);

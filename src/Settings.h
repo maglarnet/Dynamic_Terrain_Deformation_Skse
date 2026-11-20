@@ -93,6 +93,11 @@ namespace Settings
 
 	inline float shelterFloorTolerance{ 8.0f };
 
+	inline bool enableAuthoredMeshDeformation{ false };
+	inline float authoredMeshContactClearance{ 16.0f };
+	inline std::string meshSnowTextures{ "landscape\\snow0" };
+	inline float meshSnowHeightBand{ 64.0f };
+
 	inline bool enableStaticProbe{ false };
 
 	inline float staticProbeOffset{ 0.0f };

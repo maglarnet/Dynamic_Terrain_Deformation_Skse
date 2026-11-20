@@ -59,6 +59,10 @@ if exist "%BUILD%\ShaderGen.exe" (
     echo Shaders: ALL PASS
 )
 
+if exist "%BUILD%\AuthoredSnowTest.exe" (
+    "%BUILD%\AuthoredSnowTest.exe" || exit /b 1
+)
+
 if exist "%BUILD%\StampSurfaceTest.exe" (
     "%BUILD%\StampSurfaceTest.exe" || exit /b 1
 )

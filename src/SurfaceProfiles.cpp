@@ -52,6 +52,15 @@ namespace Surfaces
 
 		constexpr auto kStampSection = "stampdefaults";
 
+		struct MeshSnow
+		{
+			Slot depth, radius, shoulder, decay, rim;
+		};
+
+		MeshSnow g_meshSnow{};
+
+		constexpr auto kMeshSection = "snowmeshes";
+
 		struct Profile
 		{
 			std::string name;
@@ -178,6 +187,7 @@ namespace Surfaces
 			Profile     current{};
 			bool        open = false;
 			bool        inStamp = false;
+			bool        inMesh = false;
 			std::string line;
 
 			const auto commit = [&]() {
@@ -211,11 +221,12 @@ namespace Surfaces
 					current.source = std::string(a_source);
 
 					inStamp = Lowered(current.name) == kStampSection;
-					open = !inStamp;
+					inMesh = Lowered(current.name) == kMeshSection;
+					open = !inStamp && !inMesh;
 					continue;
 				}
 
-				if (inStamp) {
+				if (inStamp || inMesh) {
 					const auto eq = trimmed.find('=');
 					if (eq == std::string_view::npos) {
 						continue;
@@ -246,6 +257,25 @@ namespace Surfaces
 						a_slot.value = clamped;
 						a_slot.source = std::string(a_source);
 					};
+
+					if (inMesh) {
+						if (skey == "depth") {
+							take(g_meshSnow.depth, 0.0f, 8.0f);
+						} else if (skey == "radius") {
+							take(g_meshSnow.radius, 0.05f, 8.0f);
+						} else if (skey == "shoulder") {
+							take(g_meshSnow.shoulder, 0.0f, 0.95f);
+						} else if (skey == "decay") {
+							take(g_meshSnow.decay, 0.0f, 2.0f);
+						} else if (skey == "rim") {
+							take(g_meshSnow.rim, 0.0f, 4.0f);
+						} else {
+							logger::warn("Surfaces: [{}] in {} - '{}' is not a snow mesh key; it "
+										 "takes Depth, Radius, Shoulder, Decay and Rim",
+								current.name, a_source, skey);
+						}
+						continue;
+					}
 
 					if (skey == "snowstampreposerate") {
 						take(g_stampDefaults.snowRepose, -1.0f, 1.0f);
@@ -399,6 +429,7 @@ namespace Surfaces
 	{
 		g_profiles.clear();
 		g_stampDefaults = StampDefaults{};
+		g_meshSnow = MeshSnow{};
 		{
 			std::lock_guard lock(g_cacheLock);
 			g_cache.clear();
@@ -463,6 +494,19 @@ namespace Surfaces
 
 		applyStampDefaults();
 
+		if (HasMeshProfile()) {
+			const auto r = MeshResponse();
+			const auto from = [](const Slot& a_slot) {
+				return a_slot.value ? a_slot.source : std::string{ "ResponseSnow" };
+			};
+			logger::info("Surfaces: [SnowMeshes] depth x{:.2f} ({}) radius x{:.2f} ({}) shoulder {:.2f} ({}) "
+						 "decay x{:.2f} ({}) rim x{:.2f} ({}) - every print on a snow mesh uses these, "
+						 "never the land beneath",
+				r.depthScale, from(g_meshSnow.depth), r.radiusScale, from(g_meshSnow.radius), r.shoulder,
+				from(g_meshSnow.shoulder), r.decayScale, from(g_meshSnow.decay), r.rimScale,
+				from(g_meshSnow.rim));
+		}
+
 		if (g_profiles.empty()) {
 			logger::info("Surfaces: no per-texture profiles found under {} - running on "
 						 "the main INI's response table and the game's material ids",
@@ -506,6 +550,24 @@ namespace Surfaces
 
 		logger::info("  a dash means the profile left that one alone, so the main INI's "
 					 "Response row for the surface decides it");
+	}
+
+	bool HasMeshProfile()
+	{
+		const auto& m = g_meshSnow;
+		return m.depth.value || m.radius.value || m.shoulder.value || m.decay.value || m.rim.value;
+	}
+
+	Response MeshResponse()
+	{
+		Response r = ResponseFor(Type::kSnow);
+		const auto& m = g_meshSnow;
+		if (m.depth.value) { r.depthScale = *m.depth.value; }
+		if (m.radius.value) { r.radiusScale = *m.radius.value; }
+		if (m.shoulder.value) { r.shoulder = *m.shoulder.value; }
+		if (m.decay.value) { r.decayScale = *m.decay.value; }
+		if (m.rim.value) { r.rimScale = *m.rim.value; }
+		return r;
 	}
 
 	void ReleaseProfiles()

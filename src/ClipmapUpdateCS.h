@@ -4,6 +4,7 @@
 #pragma once
 
 #include "Clipmap.h"
+#include "MeshSnowSurface.h"
 
 #include "Shelter.h"
 #include "SnowCoverage.h"
@@ -49,6 +50,10 @@ Texture2D<float2> CoarseDecay : register(t2);
 Texture2D<float> SnowCoverageMap : register(t3);
 Texture2D<float> SnowMeshCapMap : register(t4);
 
+Texture2D<float> SurfaceBefore : register(t6);
+Texture2D<float> CoarseSurface : register(t7);
+RWTexture2D<float> Surface : register(u3);
+
 cbuffer Params : register(b0)
 {
 
@@ -76,6 +81,9 @@ cbuffer Params : register(b0)
 
 	float4 RaiseWindow;
 	float4 StampBounds[MAX_STAMPS];
+
+	float4 StampSurface[MAX_STAMPS];
+	float4 MeshSnow;
 };
 
 )"
@@ -245,6 +253,10 @@ void main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 	float rate = metadata.x;
 	float snow = metadata.y >= 0.5f ? 1.0f : 0.0f;
 
+	const bool meshField = MeshSnow.x > 0.5f;
+	const float band = MeshSnow.y;
+	float surface = (meshField && h != 0.0f) ? SurfaceBefore[id.xy] : 0.0f;
+
 	if (Control.x > 0.0f) {
 		h *= pow(max(saturate(rate), 1e-6f), Control.x);
 	}
@@ -265,6 +277,7 @@ void main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 	float target = 0.0f;
 	float targetRate = 0.0f;
 	float targetSnow = 0.0f;
+	float targetSurface = 0.0f;
 
 	const int2 first = (int2(gid.xy * 8) - base) & mask;
 	const bool2 wraps = first + 7 > mask;
@@ -348,17 +361,28 @@ void main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 			target = profile;
 			targetRate = p.y;
 			targetSnow = stampSnow;
+			if (meshField) {
+				const float4 pressed = StampSurface[i];
+				targetSurface = EncodeSurface(pressed.w, pressed.x + dot(pressed.yz, delta));
+			}
 		}
 	}
 
-	if (target < 0.0f && target < h) {
+	if (meshField && target != 0.0f && h != 0.0f && SurfacesDiffer(surface, targetSurface, band)) {
 		h = target;
 		rate = targetRate;
 		snow = targetSnow;
+		surface = targetSurface;
+	} else if (target < 0.0f && target < h) {
+		h = target;
+		rate = targetRate;
+		snow = targetSnow;
+		surface = targetSurface;
 	} else if (target > 0.0f && target > h && h >= 0.0f) {
 		h = target;
 		rate = targetRate;
 		snow = targetSnow;
+		surface = targetSurface;
 	}
 
 	if (melt > 0.0f && Control.x > 0.0f) {
@@ -380,10 +404,34 @@ void main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 		const float maxStep = Window.z * Weather.y;
 
 		const int2 im = int2(mask, mask);
-		const float n0 = FieldBefore[uint2((int2(id.xy) + int2(-1, 0)) & im)];
-		const float n1 = FieldBefore[uint2((int2(id.xy) + int2(1, 0)) & im)];
-		const float n2 = FieldBefore[uint2((int2(id.xy) + int2(0, -1)) & im)];
-		const float n3 = FieldBefore[uint2((int2(id.xy) + int2(0, 1)) & im)];
+		const uint2 at0 = uint2((int2(id.xy) + int2(-1, 0)) & im);
+		const uint2 at1 = uint2((int2(id.xy) + int2(1, 0)) & im);
+		const uint2 at2 = uint2((int2(id.xy) + int2(0, -1)) & im);
+		const uint2 at3 = uint2((int2(id.xy) + int2(0, 1)) & im);
+		float n0 = FieldBefore[at0];
+		float n1 = FieldBefore[at1];
+		float n2 = FieldBefore[at2];
+		float n3 = FieldBefore[at3];
+
+		float inherit = 0.0f;
+		[branch] if (meshField) {
+			const float s0 = SurfaceBefore[at0];
+			const float s1 = SurfaceBefore[at1];
+			const float s2 = SurfaceBefore[at2];
+			const float s3 = SurfaceBefore[at3];
+			if (h != 0.0f) {
+				if (n0 != 0.0f && SurfacesDiffer(surface, s0, band)) { n0 = h; }
+				if (n1 != 0.0f && SurfacesDiffer(surface, s1, band)) { n1 = h; }
+				if (n2 != 0.0f && SurfacesDiffer(surface, s2, band)) { n2 = h; }
+				if (n3 != 0.0f && SurfacesDiffer(surface, s3, band)) { n3 = h; }
+			} else {
+				float strongest = 0.0f;
+				if (abs(n0) > strongest) { strongest = abs(n0); inherit = s0; }
+				if (abs(n1) > strongest) { strongest = abs(n1); inherit = s1; }
+				if (abs(n2) > strongest) { strongest = abs(n2); inherit = s2; }
+				if (abs(n3) > strongest) { strongest = abs(n3); inherit = s3; }
+			}
+		}
 
 		float pull = 0.0f;
 		pull += sign(n0 - h) * max(abs(n0 - h) - maxStep, 0.0f);
@@ -391,6 +439,7 @@ void main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 		pull += sign(n2 - h) * max(abs(n2 - h) - maxStep, 0.0f);
 		pull += sign(n3 - h) * max(abs(n3 - h) - maxStep, 0.0f);
 
+		if (meshField && h == 0.0f && pull != 0.0f) { surface = inherit; }
 		h += pull * 0.25f * saturate(repose);
 	}
 
@@ -411,19 +460,23 @@ void main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 			const float2 coarseMetadata = CoarseDecay.SampleLevel(FieldSampler, uv, 0);
 			rate = coarseMetadata.x;
 			snow = coarseMetadata.y >= 0.5f ? 1.0f : 0.0f;
+			surface = meshField ?
+				CoarseSurface.Load(int3(int2(floor(uv * Window.w)) & mask, 0)) : 0.0f;
 		} else {
 			h = 0.0f;
 			rate = 0.0f;
 			snow = 0.0f;
+			surface = 0.0f;
 		}
 	}
 
-	if (Raise.x > 0.0f && snow > 0.5f && h < 0.0f) {
+	if (Raise.x > 0.0f && snow > 0.5f && h < 0.0f && !SurfaceIsMesh(surface)) {
 		h = max(h, -(SnowBlanket(worldXY) + Raise.z));
 	}
 
 	Field[id.xy] = h;
 	DecayRate[id.xy] = float2(rate, snow);
+	if (meshField) { Surface[id.xy] = h != 0.0f ? surface : 0.0f; }
 
 	InterlockedMax(gBlockMax, asuint(abs(h)));
 	GroupMemoryBarrierWithGroupSync();
@@ -461,6 +514,6 @@ void main(uint3 id : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 				SnowCoverage::kWorldSize, static_cast<float>(SnowCoverage::kTexels),
 				Shelter::kWorldSize, static_cast<float>(Shelter::kTexels),
 				Shelter::kWorldSize * 0.39f, Shelter::kWorldSize * 0.47f) +
-			kUpdateShader;
+			MeshSnowSurface::hlsl + kUpdateShader;
 	}
 }

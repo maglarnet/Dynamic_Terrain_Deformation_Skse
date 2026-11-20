@@ -6,6 +6,7 @@
 #include "Settings.h"
 #include "SnowCoverage.h"
 #include "SnowSurface.h"
+#include "SnowMarkDepth.h"
 #include "SurfaceTypes.h"
 #include "Weather.h"
 
@@ -272,11 +273,16 @@ namespace Surfaces
 			0.0f, 1.0f);
 		const float snowy = t * t * (3.0f - 2.0f * t);
 
-		const float trench = SnowSurface::BlanketFor(snowy, a_worldX, a_worldY) *
-			std::clamp(Settings::snowTrenchDepth, 0.0f, 4.0f) *
-			std::clamp(a_sink, 0.0f, 1.0f);
+		return SnowMarkDepth::Resolve(a_ordinaryDepth,
+			SnowSurface::BlanketFor(snowy, a_worldX, a_worldY), Settings::snowTrenchDepth, a_sink);
+	}
 
-		return std::max(a_ordinaryDepth, trench);
+	float AuthoredSnowMarkDepth(float a_ordinaryDepth)
+	{
+		const float thickness = Weather::SnowDepth();
+		const float depth = SnowMarkDepth::Resolve(a_ordinaryDepth, thickness, Settings::snowTrenchDepth);
+		return Settings::snowGroundFloor && thickness > 0.0f ?
+			std::min(depth, thickness + std::max(Settings::snowGroundBite, 0.0f)) : depth;
 	}
 
 	float RimHeight(float a_markDepth, float a_rimScale)

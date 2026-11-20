@@ -18,6 +18,7 @@ target_sources(${PROJECT_NAME} PRIVATE
     src/BloodDecals.cpp
     src/ActorShapes.cpp
     src/ActorSnowHeight.cpp
+    src/AuthoredSnow.cpp
     src/Clipmap.cpp
     src/Globals.cpp
     src/HeatSources.cpp
@@ -73,6 +74,11 @@ endif()
 option(BUILD_OFFLINE_TOOLS "Build the offline shader generator" ON)
 
 if(BUILD_OFFLINE_TOOLS)
+    add_executable(AuthoredSnowTest tools/offline/AuthoredSnowTest.cpp)
+    target_include_directories(AuthoredSnowTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_features(AuthoredSnowTest PRIVATE cxx_std_23)
+    target_link_libraries(AuthoredSnowTest PRIVATE d3d11.lib d3dcompiler.lib)
+
     add_executable(TerrainDepthInteropTest tools/offline/TerrainDepthInteropTest.cpp)
     target_include_directories(TerrainDepthInteropTest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_features(TerrainDepthInteropTest PRIVATE cxx_std_23)

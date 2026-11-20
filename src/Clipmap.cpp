@@ -10,6 +10,8 @@
 #include "GatherSnapshotPolicy.h"
 #include "CollisionTraversal.h"
 #include "Clipmap.h"
+#include "AuthoredSnow.h"
+#include "AuthoredSnowMath.h"
 
 #include "ClipmapUpdateCS.h"
 #include "ClipmapMetadata.h"
@@ -71,10 +73,14 @@ namespace Clipmap
 
 			float raiseWindow[4]{};
 			float stampBounds[kMaxStamps][4]{};
+
+			float stampSurface[kMaxStamps][4]{};
+			float meshSnow[4]{};
 		};
 		static_assert(sizeof(ParamsCB) % 16 == 0);
 		static_assert(offsetof(ParamsCB, stampBounds) == (4 * kMaxStamps + 8) * 16);
-		static_assert(sizeof(ParamsCB) == (5 * kMaxStamps + 8) * 16);
+		static_assert(offsetof(ParamsCB, stampSurface) == (5 * kMaxStamps + 8) * 16);
+		static_assert(sizeof(ParamsCB) == (6 * kMaxStamps + 9) * 16);
 
 		ID3D11Texture2D*           g_texture[kMaxLevels]{};
 		ID3D11Texture2D* g_nextField{};
@@ -91,6 +97,15 @@ namespace Clipmap
 		ID3D11Texture2D*           g_activity[kMaxLevels]{};
 		ID3D11UnorderedAccessView* g_activityUAV[kMaxLevels]{};
 		ID3D11ShaderResourceView*  g_activitySRV[kMaxLevels]{};
+
+		ID3D11Texture2D*           g_surface[kMaxLevels]{};
+		ID3D11ShaderResourceView*  g_surfaceSRV[kMaxLevels]{};
+		ID3D11UnorderedAccessView* g_surfaceUAV[kMaxLevels]{};
+		ID3D11Texture2D*           g_nextSurface{};
+		ID3D11ShaderResourceView*  g_nextSurfaceSRV{};
+		ID3D11UnorderedAccessView* g_nextSurfaceUAV{};
+		bool                       g_surfaceFailed{ false };
+		bool                       g_surfaceInUse{ false };
 		ID3D11SamplerState*        g_sampler{ nullptr };
 		ID3D11ComputeShader*       g_updateCS{ nullptr };
 		ID3D11Buffer*              g_paramsCB{ nullptr };
@@ -113,19 +128,19 @@ namespace Clipmap
 			{
 				_context->CSGetShader(&_shader, nullptr, nullptr);
 				_context->CSGetConstantBuffers(0, 1, &_cb);
-				_context->CSGetUnorderedAccessViews(0, 3, _uav);
-				_context->CSGetShaderResources(0, 6, _srv);
+				_context->CSGetUnorderedAccessViews(0, 4, _uav);
+				_context->CSGetShaderResources(0, 8, _srv);
 				_context->CSGetSamplers(0, 1, &_sampler);
 			}
 
 			~ComputeStageGuard()
 			{
-				const UINT noOffset[3] = { static_cast<UINT>(-1), static_cast<UINT>(-1),
-					static_cast<UINT>(-1) };
+				const UINT noOffset[4] = { static_cast<UINT>(-1), static_cast<UINT>(-1),
+					static_cast<UINT>(-1), static_cast<UINT>(-1) };
 				_context->CSSetShader(_shader, nullptr, 0);
 				_context->CSSetConstantBuffers(0, 1, &_cb);
-				_context->CSSetUnorderedAccessViews(0, 3, _uav, noOffset);
-				_context->CSSetShaderResources(0, 6, _srv);
+				_context->CSSetUnorderedAccessViews(0, 4, _uav, noOffset);
+				_context->CSSetShaderResources(0, 8, _srv);
 				_context->CSSetSamplers(0, 1, &_sampler);
 
 				if (_shader) {
@@ -155,11 +170,11 @@ namespace Clipmap
 		private:
 			ID3D11DeviceContext*       _context;
 
-			ID3D11ShaderResourceView*  _srv[6]{};
+			ID3D11ShaderResourceView*  _srv[8]{};
 			ID3D11SamplerState*        _sampler{ nullptr };
 			ID3D11ComputeShader*       _shader{ nullptr };
 			ID3D11Buffer*              _cb{ nullptr };
-			ID3D11UnorderedAccessView* _uav[3]{};
+			ID3D11UnorderedAccessView* _uav[4]{};
 		};
 
 		bool CreateLevel(ID3D11Device* a_device, uint32_t a_level)
@@ -270,6 +285,76 @@ namespace Clipmap
 						 "({:.2f} per cell, +/- {:.1f} m)",
 				a_level, kTexels, kTexels, WorldSizeFor(a_level), CellSizeFor(a_level),
 				WorldSizeFor(a_level) * 0.5f / 70.0f);
+			return true;
+		}
+
+		bool CreateSurface(ID3D11Device* a_device, ID3D11Texture2D*& a_texture,
+			ID3D11ShaderResourceView*& a_srv, ID3D11UnorderedAccessView*& a_uav)
+		{
+			if (a_texture && a_srv && a_uav) {
+				return true;
+			}
+			D3D11_TEXTURE2D_DESC desc{};
+			desc.Width = kTexels;
+			desc.Height = kTexels;
+			desc.MipLevels = 1;
+			desc.ArraySize = 1;
+			desc.Format = DXGI_FORMAT_R32_FLOAT;
+			desc.SampleDesc.Count = 1;
+			desc.Usage = D3D11_USAGE_DEFAULT;
+			desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+			return SUCCEEDED(a_device->CreateTexture2D(&desc, nullptr, &a_texture)) &&
+				SUCCEEDED(a_device->CreateShaderResourceView(a_texture, nullptr, &a_srv)) &&
+				SUCCEEDED(a_device->CreateUnorderedAccessView(a_texture, nullptr, &a_uav));
+		}
+
+		void ReleaseSurfaces()
+		{
+			const auto drop = [](auto*& a_ptr) {
+				if (a_ptr) {
+					a_ptr->Release();
+					a_ptr = nullptr;
+				}
+			};
+			for (uint32_t level = 0; level < kMaxLevels; ++level) {
+				drop(g_surfaceUAV[level]);
+				drop(g_surfaceSRV[level]);
+				drop(g_surface[level]);
+			}
+			drop(g_nextSurfaceUAV);
+			drop(g_nextSurfaceSRV);
+			drop(g_nextSurface);
+			g_surfaceInUse = false;
+		}
+
+		bool PrepareSurfaces(ID3D11DeviceContext* a_context, uint32_t a_levels)
+		{
+			if (!Settings::enableAuthoredMeshDeformation || g_surfaceFailed) {
+				g_surfaceInUse = false;
+				return false;
+			}
+			auto* device = globals::d3d::device;
+			bool ok = CreateSurface(device, g_nextSurface, g_nextSurfaceSRV, g_nextSurfaceUAV);
+			for (uint32_t level = 0; ok && level < a_levels; ++level) {
+				ok = CreateSurface(device, g_surface[level], g_surfaceSRV[level], g_surfaceUAV[level]);
+			}
+			if (!ok) {
+				logger::error("Clipmap: surface height allocation failed - snow meshes stay undeformed");
+				ReleaseSurfaces();
+				g_surfaceFailed = true;
+				return false;
+			}
+			if (!g_surfaceInUse) {
+				const float zero[4]{};
+				a_context->ClearUnorderedAccessViewFloat(g_nextSurfaceUAV, zero);
+				for (uint32_t level = 0; level < a_levels; ++level) {
+					a_context->ClearUnorderedAccessViewFloat(g_surfaceUAV[level], zero);
+				}
+				g_surfaceInUse = true;
+				logger::info("Clipmap: surface heights on, {} MiB, band {:.0f} units",
+					(a_levels + 1) * kTexels * kTexels * sizeof(float) / (1024 * 1024),
+					Settings::meshSnowHeightBand);
+			}
 			return true;
 		}
 
@@ -582,12 +667,17 @@ namespace Clipmap
 			}
 
 			const auto  ground = Surfaces::GroundAt(position);
-			const auto  surface = ground.type;
-			const auto& response = ground.response;
+			const bool  meshProfile = Surfaces::HasMeshProfile();
+			const auto  meshResponse = Surfaces::MeshResponse();
+			AuthoredSnow::Contact actorMesh{};
+			const bool onMesh = AuthoredSnow::FindContact(position.x, position.y, position.z,
+				Settings::authoredMeshContactClearance, actorMesh);
+			const auto surface = onMesh ? Surfaces::Type::kSnow : ground.type;
+			const auto& response = onMesh ? meshResponse : ground.response;
 
 			LogStampSurface(ground, position);
 
-			if (response.depthScale <= 0.0f &&
+			if (!Settings::enableAuthoredMeshDeformation && response.depthScale <= 0.0f &&
 				Surfaces::RimHeight(0.0f, response.rimScale) <= 0.0f) {
 				return;
 			}
@@ -634,7 +724,11 @@ namespace Clipmap
 						return false;
 					}
 
-					if (clearance > 0.0f && tes) {
+					AuthoredSnow::Contact meshContact{};
+					const bool meshHit = AuthoredSnow::FindContact(centre.x, centre.y, centre.z - radius,
+						Settings::authoredMeshContactClearance, meshContact);
+					if (onMesh && !meshHit) { return false; }
+					if (!meshHit && clearance > 0.0f && tes) {
 						float landZ = 0.0f;
 						if (tes->GetLandHeight(centre, landZ) &&
 							(centre.z - radius) - landZ > clearance) {
@@ -642,11 +736,13 @@ namespace Clipmap
 						}
 					}
 
+					const auto& contactResponse = meshHit ? meshResponse : response;
+					if (contactResponse.depthScale <= 0.0f && Surfaces::RimHeight(0.0f, contactResponse.rimScale) <= 0.0f) { return false; }
 					Stamp stamp{};
 					stamp.snow = surface == Surfaces::Type::kSnow;
 					stamp.x = centre.x;
 					stamp.y = centre.y;
-					stamp.radius = radius * Settings::stampRadiusScale * response.radiusScale;
+					stamp.radius = radius * Settings::stampRadiusScale * contactResponse.radiusScale;
 
 					if (oriented) {
 						const RE::NiPoint3 offset{ centre.x - position.x,
@@ -673,20 +769,45 @@ namespace Clipmap
 					}
 
 					const float ordinary =
-						Settings::stampDepth * response.depthScale * Weather::DepthScale();
+						Settings::stampDepth * contactResponse.depthScale * Weather::DepthScale();
 
 					stamp.depth = Surfaces::MarkDepth(surface, ordinary, 1.0f, stamp.x, stamp.y);
-					stamp.shoulder = std::clamp(response.shoulder, 0.0f, 0.95f);
+					stamp.shoulder = std::clamp(contactResponse.shoulder, 0.0f, 0.95f);
 
 					stamp.decay = std::clamp(
-						Settings::stampDecayPerSecond * response.decayScale * Weather::DecayScale(),
+						Settings::stampDecayPerSecond * contactResponse.decayScale * Weather::DecayScale(),
 						0.0f, 0.9999f);
 
-					stamp.rim = Surfaces::RimHeight(ordinary, response.rimScale);
+					stamp.rim = Surfaces::RimHeight(ordinary, contactResponse.rimScale);
 
 					stamp.motionX = motionX;
 					stamp.motionY = motionY;
 
+					if (meshHit) {
+						stamp.snow = true;
+						if (meshProfile) {
+							const float meshDepth = Settings::stampDepth * meshResponse.depthScale * Weather::DepthScale();
+							stamp.depth = meshDepth;
+							stamp.rim = Surfaces::RimHeight(meshDepth, meshResponse.rimScale);
+						} else {
+							const float snowDepthScale = ground.type == Surfaces::Type::kSnow ?
+								ground.response.depthScale : contactResponse.depthScale;
+							stamp.depth = Surfaces::AuthoredSnowMarkDepth(
+								Settings::stampDepth * snowDepthScale * Weather::DepthScale());
+							stamp.rim = Surfaces::RimHeight(Settings::stampDepth * snowDepthScale * Weather::DepthScale(),
+								ground.type == Surfaces::Type::kSnow ? ground.response.rimScale : contactResponse.rimScale);
+						}
+						const float snowTop = onMesh && actorMesh.mesh == meshContact.mesh ? actorMesh.z : meshContact.z;
+						stamp.depth = AuthoredSnowMath::FloorDepth(stamp.depth, snowTop, feetZ);
+						stamp.surface = MeshSnowSurface::Kind::kMesh;
+						stamp.z = meshContact.z;
+						stamp.slopeX = meshContact.gx;
+						stamp.slopeY = meshContact.gy;
+					} else {
+						stamp.surface = MeshSnowSurface::Kind::kGround;
+						stamp.z = centre.z - radius;
+					}
+					AuthoredSnow::NotePress(stamp);
 					a_out.push_back(stamp);
 
 					return false;
@@ -798,6 +919,7 @@ namespace Clipmap
 		ActorSnowHeight::BeginFrame();
 		g_cacheHits = g_cacheBuilds = g_collisionReads = 0;
 		g_actorClock = ActorCollisionCachePolicy::Advance(g_actorClock, a_deltaSeconds);
+		AuthoredSnow::BeginGather(a_deltaSeconds);
 		GatherStamps(a_deltaSeconds);
 		ActorSnowHeight::EndFrame();
 		for (auto it = g_actorCollisions.begin(); it != g_actorCollisions.end();) {
@@ -922,6 +1044,9 @@ namespace Clipmap
 
 	void Release()
 	{
+		AuthoredSnow::Release();
+		ReleaseSurfaces();
+		g_surfaceFailed = false;
 		const auto drop = [](auto*& a_ptr) {
 			if (a_ptr) {
 				a_ptr->Release();
@@ -983,6 +1108,7 @@ namespace Clipmap
 		Profiler::Tally(prepared ? Profiler::Count::kGatherPrepared :
 			pending ? Profiler::Count::kGatherRejected : Profiler::Count::kGatherEmpty);
 		if (!prepared) { g_frameStamps.clear(); g_frameContacts.clear(); }
+		AuthoredSnow::NewFrame();
 		const auto& stamps = g_frameStamps;
 		if (prepared) {
 			Profiler::AddCpuTicks(Profiler::CpuScope::kGatherStamps, g_gatherTicks);
@@ -1055,10 +1181,19 @@ namespace Clipmap
 			params.stampMotion[i][0] = stamps[i].motionX;
 			params.stampMotion[i][1] = stamps[i].motionY;
 			params.stampMotion[i][2] = stamps[i].snow ? 1.0f : 0.0f;
+
+			params.stampSurface[i][0] = stamps[i].z;
+			params.stampSurface[i][1] = stamps[i].slopeX;
+			params.stampSurface[i][2] = stamps[i].slopeY;
+			params.stampSurface[i][3] = static_cast<float>(stamps[i].surface);
 		}
 		FillStampBounds(params, count);
 
 		auto* context = globals::d3d::context;
+
+		const bool surfaces = PrepareSurfaces(context, levels);
+		params.meshSnow[0] = surfaces ? 1.0f : 0.0f;
+		params.meshSnow[1] = Settings::meshSnowHeightBand;
 
 		{
 
@@ -1115,8 +1250,8 @@ namespace Clipmap
 		{
 			const ComputeStageGuard guard(context);
 
-			const UINT noOffset[3] = { static_cast<UINT>(-1), static_cast<UINT>(-1),
-				static_cast<UINT>(-1) };
+			const UINT noOffset[4] = { static_cast<UINT>(-1), static_cast<UINT>(-1),
+				static_cast<UINT>(-1), static_cast<UINT>(-1) };
 
 
 			ID3D11ShaderResourceView* floorMaps[2] = {
@@ -1185,21 +1320,32 @@ namespace Clipmap
 				context->ClearUnorderedAccessViewUint(g_activityUAV[level], zero);
 
 				context->CSSetShaderResources(5, 1, &g_srv[level]);
-				ID3D11UnorderedAccessView* uavs[3] = { g_nextFieldUAV, g_decayUAV[level],
-					g_activityUAV[level] };
+				ID3D11ShaderResourceView* surfaceViews[2] = {
+					surfaces ? g_surfaceSRV[level] : nullptr,
+					surfaces && hasCoarser ? g_surfaceSRV[level + 1] : nullptr
+				};
+				context->CSSetShaderResources(6, 2, surfaceViews);
+				ID3D11UnorderedAccessView* uavs[4] = { g_nextFieldUAV, g_decayUAV[level],
+					g_activityUAV[level], surfaces ? g_nextSurfaceUAV : nullptr };
 				context->CSSetConstantBuffers(0, 1, &g_paramsCB);
-				context->CSSetUnorderedAccessViews(0, 3, uavs, noOffset);
+				context->CSSetUnorderedAccessViews(0, 4, uavs, noOffset);
 				context->Dispatch(kTexels / 8, kTexels / 8, 1);
 
-				ID3D11UnorderedAccessView* nullUAVs[3] = { nullptr, nullptr, nullptr };
-				context->CSSetUnorderedAccessViews(0, 3, nullUAVs, noOffset);
+				ID3D11UnorderedAccessView* nullUAVs[4] = { nullptr, nullptr, nullptr, nullptr };
+				context->CSSetUnorderedAccessViews(0, 4, nullUAVs, noOffset);
 
 				ID3D11ShaderResourceView* nullSeeds[2] = { nullptr, nullptr };
 				context->CSSetShaderResources(1, 2, nullSeeds);
 				context->CSSetShaderResources(5, 1, nullSeeds);
+				context->CSSetShaderResources(6, 2, nullSeeds);
 				std::swap(g_texture[level], g_nextField);
 				std::swap(g_srv[level], g_nextFieldSRV);
 				std::swap(g_uav[level], g_nextFieldUAV);
+				if (surfaces) {
+					std::swap(g_surface[level], g_nextSurface);
+					std::swap(g_surfaceSRV[level], g_nextSurfaceSRV);
+					std::swap(g_surfaceUAV[level], g_nextSurfaceUAV);
+				}
 			}
 
 			ID3D11ShaderResourceView* nullFloor[2] = { nullptr, nullptr };
@@ -1212,6 +1358,7 @@ namespace Clipmap
 	// window jump does, and actor motion starts fresh instead of from before the skip.
 	void ForgetWindow()
 	{
+		AuthoredSnow::Reset();
 		InvalidateGather();
 		g_snapshot.Reset();
 		g_frameStamps.clear();
@@ -1254,6 +1401,37 @@ namespace Clipmap
 		if (LevelCount() > 1 && g_srv[1]) {
 			a_context->DSSetShaderResources(kLevel1Slot, 1, &g_srv[1]);
 		}
+
+		if (MeshFieldReady()) {
+			a_context->DSSetShaderResources(kSurfaceSlot, 2, g_surfaceSRV);
+		}
+	}
+
+	bool MeshFieldReady()
+	{
+		return g_surfaceInUse && Settings::enableAuthoredMeshDeformation && g_surfaceSRV[0] &&
+			(LevelCount() < 2 || g_surfaceSRV[1]);
+	}
+
+	void BindMeshDomain(ID3D11DeviceContext* a_context)
+	{
+		if (!Ready()) {
+			return;
+		}
+		ID3D11ShaderResourceView* heights[3] = { g_srv[0], nullptr,
+			LevelCount() > 1 ? g_srv[1] : nullptr };
+		a_context->DSSetShaderResources(0, 1, &heights[0]);
+		a_context->DSSetShaderResources(kLevel1Slot, 1, &heights[2]);
+		const bool ready = MeshFieldReady();
+		ID3D11ShaderResourceView* surfaces[2] = { ready ? g_surfaceSRV[0] : nullptr,
+			ready && LevelCount() > 1 ? g_surfaceSRV[1] : nullptr };
+		a_context->DSSetShaderResources(kSurfaceSlot, 2, surfaces);
+		a_context->DSSetSamplers(0, 1, &g_sampler);
+		a_context->DSSetConstantBuffers(kParamsSlot, 1, &g_windowCB);
+		a_context->HSSetConstantBuffers(kParamsSlot, 1, &g_windowCB);
+		ID3D11ShaderResourceView* activity[2] = { g_activitySRV[0],
+			LevelCount() > 1 ? g_activitySRV[1] : nullptr };
+		a_context->HSSetShaderResources(kActivitySlot, 2, activity);
 	}
 
 	void UnbindDomain(ID3D11DeviceContext* a_context)
@@ -1264,6 +1442,8 @@ namespace Clipmap
 		ID3D11Buffer* nullCB = nullptr;
 		a_context->DSSetShaderResources(0, 1, &nullSRV);
 		a_context->DSSetShaderResources(kLevel1Slot, 1, &nullSRV);
+		ID3D11ShaderResourceView* nullSurfaces[2] = { nullptr, nullptr };
+		a_context->DSSetShaderResources(kSurfaceSlot, 2, nullSurfaces);
 		a_context->HSSetShaderResources(kActivitySlot, 1, &nullSRV);
 		a_context->DSSetSamplers(0, 1, &nullSampler);
 		a_context->DSSetConstantBuffers(kParamsSlot, 1, &nullCB);

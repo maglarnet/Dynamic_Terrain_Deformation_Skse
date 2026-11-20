@@ -11,9 +11,9 @@ namespace Tessellation
 	struct SavedResources
 	{
 		ID3D11Buffer* domainBuffers[4]{};
-		ID3D11Buffer* hullBuffers[2]{};
-		ID3D11ShaderResourceView* domainViews[4]{};
-		ID3D11ShaderResourceView* hullViews[1]{};
+		ID3D11Buffer* hullBuffers[4]{};
+		ID3D11ShaderResourceView* domainViews[6]{};
+		ID3D11ShaderResourceView* hullViews[2]{};
 		ID3D11SamplerState* domainSamplers[3]{};
 
 		SavedResources() = default;
@@ -39,18 +39,18 @@ namespace Tessellation
 		{
 			Release();
 			context->DSGetConstantBuffers(10, 4, domainBuffers);
-			context->HSGetConstantBuffers(12, 2, hullBuffers);
-			context->DSGetShaderResources(0, 4, domainViews);
-			context->HSGetShaderResources(0, 1, hullViews);
+			context->HSGetConstantBuffers(10, 4, hullBuffers);
+			context->DSGetShaderResources(0, 6, domainViews);
+			context->HSGetShaderResources(0, 2, hullViews);
 			context->DSGetSamplers(0, 3, domainSamplers);
 		}
 
 		void Restore(ID3D11DeviceContext* context)
 		{
 			context->DSSetConstantBuffers(10, 4, domainBuffers);
-			context->HSSetConstantBuffers(12, 2, hullBuffers);
-			context->DSSetShaderResources(0, 4, domainViews);
-			context->HSSetShaderResources(0, 1, hullViews);
+			context->HSSetConstantBuffers(10, 4, hullBuffers);
+			context->DSSetShaderResources(0, 6, domainViews);
+			context->HSSetShaderResources(0, 2, hullViews);
 			context->DSSetSamplers(0, 3, domainSamplers);
 			Release();
 		}

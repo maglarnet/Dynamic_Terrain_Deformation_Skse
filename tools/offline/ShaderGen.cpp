@@ -322,6 +322,36 @@ int main(int a_argc, char** a_argv)
 	Settings::snowRaiseHeight = 35.0f;
 	Settings::shelterMeshCap = true;
 	Settings::enableTessellationBounds = true;
+	Settings::terrainBlendingCompatibility = true;
+	Generate("authored_colour", ColourSignature(), outDir, Tessellation::Mode::kAuthoredSnow);
+	Generate("authored_depth", DepthPrepassSignature(), outDir, Tessellation::Mode::kAuthoredSnow);
+	const auto authoredSource = Tessellation::EmitPrologue(true, Tessellation::Mode::kAuthoredSnow);
+	if (authoredSource.find("SnowCoverageMap") != std::string::npos ||
+		authoredSource.find("TerrainDepthCorrection") != std::string::npos) {
+		std::puts("FAIL: authored caps inherited terrain raising or clip bias");
+		++g_failures;
+	}
+	if (Tessellation::EmitPrologue(true, Tessellation::Mode::kLandscape).find("ClipmapSurface") != std::string::npos) {
+		std::puts("FAIL: with snow meshes off the land still reads surface heights");
+		++g_failures;
+	}
+	Settings::enableAuthoredMeshDeformation = true;
+	if (Tessellation::EmitPrologue(true, Tessellation::Mode::kLandscape).find("GatedField(ClipmapHeight1") ==
+		std::string::npos) {
+		std::puts("FAIL: with snow meshes on the land does not leave out other surfaces' dents");
+		++g_failures;
+	}
+	Generate("mesh_field_authored_colour", ColourSignature(), outDir, Tessellation::Mode::kAuthoredSnow);
+	Generate("mesh_field_authored_depth", DepthPrepassSignature(), outDir, Tessellation::Mode::kAuthoredSnow);
+	Generate("mesh_field_land_colour", ColourSignature(), outDir);
+	Generate("mesh_field_land_depth", DepthPrepassSignature(), outDir);
+	Generate("mesh_field_blood", ColourSignature(), outDir, Tessellation::Mode::kBloodDecal);
+	const auto levels = Settings::clipmapLevels;
+	Settings::clipmapLevels = 1;
+	Generate("mesh_field_one_level_land", ColourSignature(), outDir);
+	Generate("mesh_field_one_level_authored", ColourSignature(), outDir, Tessellation::Mode::kAuthoredSnow);
+	Settings::clipmapLevels = levels;
+	Settings::enableAuthoredMeshDeformation = false;
 	Generate("blood_colour", ColourSignature(), outDir, Tessellation::Mode::kBloodDecal);
 	Generate("blood_depth", DepthPrepassSignature(), outDir, Tessellation::Mode::kBloodDecal);
 	Settings::enableTessellationBounds = false;
@@ -397,6 +427,8 @@ namespace Clipmap
 
 	void BindDomain(ID3D11DeviceContext*) {}
 	void UnbindDomain(ID3D11DeviceContext*) {}
+	void BindMeshDomain(ID3D11DeviceContext*) {}
+	bool MeshFieldReady() { return true; }
 }
 
 namespace SnowCoverage

@@ -9,6 +9,7 @@
 #include "BloodDecals.h"
 #include "BloodRoutingGate.h"
 #include "Clipmap.h"
+#include "AuthoredSnow.h"
 #include "Globals.h"
 #include "Hooks.h"
 #include "ObjectStamps.h"
@@ -619,6 +620,36 @@ namespace Hooks
 			return true;
 		}
 
+		bool AuthoredSnowCandidate(RE::BSRenderPass* pass)
+		{
+			return pass && AuthoredSnow::Matches(pass->geometry);
+		}
+
+		void RouteAuthoredSnow(RE::BSRenderPass* pass, const DrawInfo& info)
+		{
+			if (!globals::Ready() || !Settings::useClipmap || !Clipmap::Ready()) { return; }
+			auto* context = globals::d3d::context;
+			ID3D11HullShader* hs{};
+			ID3D11DomainShader* ds{};
+			ID3D11GeometryShader* gs{};
+			D3D11_PRIMITIVE_TOPOLOGY topology{};
+			context->HSGetShader(&hs, nullptr, nullptr);
+			context->DSGetShader(&ds, nullptr, nullptr);
+			context->GSGetShader(&gs, nullptr, nullptr);
+			context->IAGetPrimitiveTopology(&topology);
+			const bool supported = !hs && !ds && !gs && topology == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+			if (hs) { hs->Release(); }
+			if (ds) { ds->Release(); }
+			if (gs) { gs->Release(); }
+			if (!supported) { return; }
+			if (const auto* signature = SignatureFor(info)) {
+				if (Tessellation::BeginDraw(info.vertexDesc, *signature, Tessellation::Mode::kAuthoredSnow, {})) {
+					static bool reported{};
+					if (!reported) { reported = true; logger::info("Snow meshes: first draw routed ('{}', dents from the land's field on its own surface)", pass->geometry ? pass->geometry->name.c_str() : ""); }
+				}
+			}
+		}
+
 		struct BSLightingShader_SetupGeometry
 		{
 			static void thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
@@ -638,8 +669,10 @@ namespace Hooks
 					return;
 				}
 
+				const bool authoredCandidate = AuthoredSnowCandidate(a_pass);
+				if (authoredCandidate && (!globals::Ready() || !Settings::useClipmap || !Clipmap::Ready() || !AuthoredSnow::NeedsDraw(a_pass->geometry))) { return; }
 				const bool bloodCandidate = a_pass && BloodDecals::MayContain(a_pass->geometry);
-				if (!Settings::enableStaticProbe && !BloodRoutingGate::Relevant(false, NearLandscape(a_pass), bloodCandidate)) { return; }
+				if (!authoredCandidate && !Settings::enableStaticProbe && !BloodRoutingGate::Relevant(false, NearLandscape(a_pass), bloodCandidate)) { return; }
 
 				if (!DrawnFromPlayerCamera()) {
 					return;
@@ -647,6 +680,7 @@ namespace Hooks
 
 				const DrawInfo info = Describe(a_pass);
 
+				if (authoredCandidate) { RouteAuthoredSnow(a_pass, info); return; }
 				if (bloodCandidate && RouteBlood(a_pass, info)) { return; }
 
 				if (Settings::enableStaticProbe && !info.isNearLand && !info.isLodLand) {
@@ -724,9 +758,11 @@ namespace Hooks
 					return;
 				}
 
+				const bool authoredCandidate = AuthoredSnowCandidate(a_pass);
+				if (authoredCandidate && (!globals::Ready() || !Settings::useClipmap || !Clipmap::Ready() || !AuthoredSnow::NeedsDraw(a_pass->geometry))) { return; }
 				const bool bloodCandidate = a_pass && BloodDecals::MayContain(a_pass->geometry);
 				const bool probeCandidate = Settings::enableStaticProbe && Settings::staticProbeOffset != 0.0f;
-				if (!probeCandidate && !BloodRoutingGate::Relevant(false, NearLandscape(a_pass), bloodCandidate)) { return; }
+				if (!authoredCandidate && !probeCandidate && !BloodRoutingGate::Relevant(false, NearLandscape(a_pass), bloodCandidate)) { return; }
 				const DrawInfo info = Describe(a_pass);
 
 				if (!UtilityRouting::IsCameraDepth(info.vertexTechnique)) {
@@ -742,6 +778,7 @@ namespace Hooks
 					}
 					return;
 				}
+				if (authoredCandidate) { RouteAuthoredSnow(a_pass, info); return; }
 				if (bloodCandidate && RouteBlood(a_pass, info)) { return; }
 
 				if (Settings::enableStaticProbe && Settings::staticProbeOffset != 0.0f &&
@@ -802,6 +839,7 @@ namespace Hooks
 
 			Tessellation::Reset();
 			BloodDecals::Reset();
+			AuthoredSnow::Reset();
 
 			Surfaces::Reset();
 

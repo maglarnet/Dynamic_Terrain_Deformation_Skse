@@ -57,6 +57,8 @@ struct Params
 	float raise[4]{ 0, 1, 0, 0 };
 	float raiseWindow[4]{ 0, 0, 1.0e6f, 2.0e6f };
 	float stampBounds[Clipmap::kMaxStamps][4]{};
+	float stampSurface[Clipmap::kMaxStamps][4]{};
+	float meshSnow[4]{};
 	Params()
 	{
 		stamps[0][2] = 5;
@@ -81,6 +83,9 @@ class Field
 	ComPtr<ID3D11ShaderResourceView> coarseHeight, coarseMeta;
 	ComPtr<ID3D11Texture2D> coverage, meshCap;
 	ComPtr<ID3D11ShaderResourceView> coverageSRV, meshCapSRV;
+	ComPtr<ID3D11Texture2D> surface, nextSurface, readSurface;
+	ComPtr<ID3D11ShaderResourceView> surfaceSRV, nextSurfaceSRV;
+	ComPtr<ID3D11UnorderedAccessView> surfaceUAV, nextSurfaceUAV;
 	ComPtr<ID3D11Buffer> cb;
 	ComPtr<ID3D11SamplerState> sampler;
 	DXGI_FORMAT metadataFormat;
@@ -110,6 +115,12 @@ public:
 		Check(device->CreateTexture2D(&desc, nullptr, &nextHeight), "Spare height");
 		Check(device->CreateUnorderedAccessView(nextHeight.Get(), nullptr, &nextHeightUAV), "Spare UAV");
 		Check(device->CreateShaderResourceView(nextHeight.Get(), nullptr, &nextHeightSRV), "Spare SRV");
+		Check(device->CreateTexture2D(&desc, nullptr, &surface), "Create surface");
+		Check(device->CreateUnorderedAccessView(surface.Get(), nullptr, &surfaceUAV), "Surface UAV");
+		Check(device->CreateShaderResourceView(surface.Get(), nullptr, &surfaceSRV), "Surface SRV");
+		Check(device->CreateTexture2D(&desc, nullptr, &nextSurface), "Spare surface");
+		Check(device->CreateUnorderedAccessView(nextSurface.Get(), nullptr, &nextSurfaceUAV), "Spare surface UAV");
+		Check(device->CreateShaderResourceView(nextSurface.Get(), nullptr, &nextSurfaceSRV), "Spare surface SRV");
 		desc.Format = metadataFormat;
 		Check(device->CreateTexture2D(&desc, nullptr, &metadata), "Create metadata");
 		Check(device->CreateUnorderedAccessView(metadata.Get(), nullptr, &metaUAV), "Metadata UAV");
@@ -123,6 +134,7 @@ public:
 		desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 		desc.Format = DXGI_FORMAT_R32_FLOAT;
 		Check(device->CreateTexture2D(&desc, nullptr, &readHeight), "Height readback");
+		Check(device->CreateTexture2D(&desc, nullptr, &readSurface), "Surface readback");
 		desc.Format = metadataFormat;
 		Check(device->CreateTexture2D(&desc, nullptr, &readMeta), "Metadata readback");
 		D3D11_BUFFER_DESC buffer{};
@@ -210,13 +222,13 @@ public:
 			for (UINT slot = 10; slot < 14; ++slot) {
 				auto* value = (slot + phase) % 2 ? nullptr : cb.Get();
 				context->DSSetConstantBuffers(slot, 1, &value);
-				if (slot >= 12) { context->HSSetConstantBuffers(slot, 1, &value); }
+				if (slot >= 10) { context->HSSetConstantBuffers(slot, 1, &value); }
 			}
 			for (UINT slot = 0; slot < 4; ++slot) {
 				auto* srv = (slot + phase) % 2 ? nullptr : view.Get();
 				auto* state = (slot + phase) % 2 ? nullptr : sampler.Get();
 				context->DSSetShaderResources(slot, 1, &srv);
-				if (slot == 0) { context->HSSetShaderResources(slot, 1, &srv); }
+				if (slot < 2) { context->HSSetShaderResources(slot, 1, &srv); }
 				if (slot < 3) { context->DSSetSamplers(slot, 1, &state); }
 			}
 			saved.Restore(context.Get());
@@ -417,27 +429,50 @@ Out main(PatchConstants c, float3 b : SV_DomainLocation, const OutputPatch<CP, 3
 		const float zero[4]{};
 		context->ClearUnorderedAccessViewFloat(heightUAV.Get(), zero);
 		context->ClearUnorderedAccessViewFloat(metaUAV.Get(), zero);
+		context->ClearUnorderedAccessViewFloat(surfaceUAV.Get(), zero);
+		context->ClearUnorderedAccessViewFloat(nextSurfaceUAV.Get(), zero);
 	}
 	void Step(Params params, bool seed = false)
 	{
 		Clipmap::FillStampBounds(params, static_cast<uint32_t>(params.control[1]));
 		context->UpdateSubresource(cb.Get(), 0, nullptr, &params, 0, 0);
-		ID3D11UnorderedAccessView* uavs[]{ nextHeightUAV.Get(), metaUAV.Get(), activityUAV.Get() };
+		const bool surfaces = params.meshSnow[0] > 0.5f;
+		ID3D11UnorderedAccessView* uavs[]{ nextHeightUAV.Get(), metaUAV.Get(), activityUAV.Get(),
+			surfaces ? nextSurfaceUAV.Get() : nullptr };
 		ID3D11ShaderResourceView* srvs[]{ nullptr, seed ? coarseHeight.Get() : nullptr,
-			seed ? coarseMeta.Get() : nullptr, coverageSRV.Get(), meshCapSRV.Get(), heightSRV.Get() };
+			seed ? coarseMeta.Get() : nullptr, coverageSRV.Get(), meshCapSRV.Get(), heightSRV.Get(),
+			surfaces ? surfaceSRV.Get() : nullptr, nullptr };
 		context->CSSetShader(shader.Get(), nullptr, 0);
-		context->CSSetShaderResources(0, 6, srvs);
+		context->CSSetShaderResources(0, 8, srvs);
 		context->CSSetSamplers(0, 1, sampler.GetAddressOf());
 		context->CSSetConstantBuffers(0, 1, cb.GetAddressOf());
-		context->CSSetUnorderedAccessViews(0, 3, uavs, nullptr);
+		context->CSSetUnorderedAccessViews(0, 4, uavs, nullptr);
 		context->Dispatch(N / 8, N / 8, 1);
-		ID3D11UnorderedAccessView* nullUAVs[3]{};
-		ID3D11ShaderResourceView* nullSRVs[6]{};
-		context->CSSetUnorderedAccessViews(0, 3, nullUAVs, nullptr);
-		context->CSSetShaderResources(0, 6, nullSRVs);
+		ID3D11UnorderedAccessView* nullUAVs[4]{};
+		ID3D11ShaderResourceView* nullSRVs[8]{};
+		context->CSSetUnorderedAccessViews(0, 4, nullUAVs, nullptr);
+		context->CSSetShaderResources(0, 8, nullSRVs);
 		height.Swap(nextHeight);
 		heightSRV.Swap(nextHeightSRV);
 		heightUAV.Swap(nextHeightUAV);
+		if (surfaces) {
+			surface.Swap(nextSurface);
+			surfaceSRV.Swap(nextSurfaceSRV);
+			surfaceUAV.Swap(nextSurfaceUAV);
+		}
+	}
+	std::vector<float> ReadSurface()
+	{
+		context->CopyResource(readSurface.Get(), surface.Get());
+		D3D11_MAPPED_SUBRESOURCE mapped{};
+		Check(context->Map(readSurface.Get(), 0, D3D11_MAP_READ, 0, &mapped), "Read surface");
+		std::vector<float> result(N * N);
+		for (UINT y = 0; y < N; ++y) {
+			const auto row = reinterpret_cast<const float*>(static_cast<const char*>(mapped.pData) + y * mapped.RowPitch);
+			std::copy_n(row, N, result.begin() + y * N);
+		}
+		context->Unmap(readSurface.Get(), 0);
+		return result;
 	}
 	std::vector<float> Read()
 	{
@@ -528,6 +563,57 @@ void CheckGroundFloor(Field& field)
 
 	field.Clear();
 	std::puts("PASS snow ground floor: blanket, bite, mesh cap, bare ground and other surfaces");
+}
+
+void CheckMeshSurfaces(Field& field)
+{
+	using namespace MeshSnowSurface;
+	const auto deepest = [](const std::vector<float>& a_field) {
+		return *std::min_element(a_field.begin(), a_field.end());
+	};
+	const auto within = [](float a, float b) { return std::abs(a - b) < 0.3f; };
+
+	Params p;
+	p.stampMotion[0][2] = 1;
+	p.stamps[0][3] = 40.0f;
+	p.raise[0] = 10.0f;
+	field.SetFloorMaps(1.0f, 1.0f);
+	p.meshSnow[0] = 1.0f;
+	p.meshSnow[1] = 64.0f;
+
+	p.stampSurface[0][0] = 100.0f;
+	p.stampSurface[0][3] = 1.0f;
+	field.Clear(); field.Step(p);
+	Require(deepest(field.Read()) > -10.001f, "A dent on the land escaped the blanket floor");
+	Require(within(field.ReadSurface()[0], Encode(Kind::kGround, 100.0f)), "A land dent did not keep its height");
+
+	p.stampSurface[0][3] = 2.0f;
+	p.stampSurface[0][1] = 0.5f;
+	field.Clear(); field.Step(p);
+	Require(deepest(field.Read()) < -20.0f, "A dent on a snow mesh was held by the land's blanket");
+	const auto surfaces = field.ReadSurface();
+	Require(within(surfaces[0], Encode(Kind::kMesh, 100.0f)), "A mesh dent did not keep its surface height");
+	Require(within(surfaces[2], Encode(Kind::kMesh, 101.0f)), "A mesh dent's height ignored the slope");
+	Require(surfaces[N / 2 * N + N / 2] == 0.0f, "A texel no stamp reached took a surface");
+	p.stampSurface[0][1] = 0.0f;
+
+	p.stamps[0][3] = 5.0f;
+	p.stampSurface[0][0] = 110.0f;
+	field.Step(p);
+	Require(field.Read()[0] < -20.0f, "A shallower dent on the same surface replaced a deeper one");
+	p.stampSurface[0][0] = 300.0f;
+	field.Step(p);
+	Require(field.Read()[0] > -7.5f && field.Read()[0] < -2.5f, "A dent on another surface did not replace the old one");
+	Require(within(field.ReadSurface()[0], Encode(Kind::kMesh, 300.0f)), "The replacing surface was not kept");
+
+	p.meshSnow[0] = 0.0f;
+	p.stamps[0][3] = 40.0f;
+	field.Clear(); field.Step(p);
+	Require(deepest(field.Read()) > -10.001f, "With snow meshes off a mesh stamp escaped the blanket floor");
+	Require(field.ReadSurface()[0] == 0.0f, "With snow meshes off a surface height was written");
+
+	field.Clear();
+	std::puts("PASS surface heights: land and mesh dents keep theirs, slope, floor only for the land, replacement, off");
 }
 
 void CheckMagicPatterns(Field& field)
@@ -1261,6 +1347,7 @@ int main(int argc, char** argv)
 		}
 		std::puts("PASS small arrow dents: visibility, radius, depth and repeated contact on snow and ground");
 		CheckGroundFloor(field);
+		CheckMeshSurfaces(field);
 		field.Clear();
 		Params p;
 		field.Step(p);

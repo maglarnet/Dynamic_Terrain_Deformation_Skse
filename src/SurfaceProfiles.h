@@ -35,4 +35,7 @@ namespace Surfaces
 	std::filesystem::file_time_type ProfilesWriteTime();
 
 	Ground GroundAt(const RE::NiPoint3& a_position);
+
+	bool     HasMeshProfile();
+	Response MeshResponse();
 }

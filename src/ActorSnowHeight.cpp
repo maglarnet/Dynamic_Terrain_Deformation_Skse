@@ -5,6 +5,7 @@
 #include <unordered_map>
 
 #include "ActorSnowHeightMath.h"
+#include "AuthoredSnow.h"
 #include "PCH.h"
 #include "Settings.h"
 #include "SnowSurface.h"
@@ -49,25 +50,32 @@ namespace ActorSnowHeight {
             result.reason = "invalid-position";
             return result;
         }
-        if (Surfaces::GroundAt(pos).type != Surfaces::Type::kSnow) {
-            result.reason = "non-snow-material";
-            return result;
+        AuthoredSnow::Contact mesh;
+        if (AuthoredSnow::FindContact(pos.x, pos.y, pos.z, Settings::authoredMeshContactClearance, mesh)) {
+            result.reason = "authored-snow";
+            result.snow = true;
+            result.z = mesh.z;
+        } else {
+            if (Surfaces::GroundAt(pos).type != Surfaces::Type::kSnow) {
+                result.reason = "non-snow-material";
+                return result;
+            }
+            auto* tes = RE::TES::GetSingleton();
+            float landZ{};
+            if (!tes || !tes->GetLandHeight(pos, landZ)) {
+                result.reason = "missing-land-height";
+                return result;
+            }
+            result.landZ = landZ;
+            const float lift = Settings::enableSnowRaise ? SnowSurface::LiftAt(pos.x, pos.y) : 0.0f;
+            result.z = landZ + lift;
+            if (pos.z - landZ > std::max(8.0f, lift + 4.0f) || pos.z < landZ - 32.0f) {
+                result.reason = "outside-ground-contact";
+                return result;
+            }
+            result.snow = lift > 0.1f;
+            result.reason = result.snow ? "terrain-snow" : "snow-suppressed";
         }
-        auto* tes = RE::TES::GetSingleton();
-        float landZ{};
-        if (!tes || !tes->GetLandHeight(pos, landZ)) {
-            result.reason = "missing-land-height";
-            return result;
-        }
-        result.landZ = landZ;
-        const float lift = Settings::enableSnowRaise ? SnowSurface::LiftAt(pos.x, pos.y) : 0.0f;
-        result.z = landZ + lift;
-        if (pos.z - landZ > std::max(8.0f, lift + 4.0f) || pos.z < landZ - 32.0f) {
-            result.reason = "outside-ground-contact";
-            return result;
-        }
-        result.snow = lift > 0.1f;
-        result.reason = result.snow ? "terrain-snow" : "snow-suppressed";
         result.offset = ActorSnowHeightMath::Offset(result.z, root->world.translate.z, result.snow);
         return result;
     }

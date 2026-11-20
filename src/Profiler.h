@@ -87,6 +87,7 @@ namespace Profiler
 		kCoverageFilter,
 		kShelterFilter,
 		kCoverageCombine,
+		kSnowMeshes,
 
 		kCount
 	};
