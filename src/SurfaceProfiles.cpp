@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -24,6 +25,9 @@ namespace Surfaces
 		constexpr auto kRoot = "Data/SKSE/Plugins/NMN_DeformableTerrain";
 		constexpr auto kPatches = "Patches";
 		constexpr auto kFile = "Surfaces.ini";
+		constexpr auto kCityFile = "CitySnow.ini";
+
+		AuthoredSnowMath::ModelList g_cityMeshes;
 
 		struct Overrides
 		{
@@ -375,6 +379,24 @@ namespace Surfaces
 			commit();
 		}
 
+		size_t ParseCityFile(const std::filesystem::path& a_path, std::string_view a_source, size_t& a_through)
+		{
+			std::ifstream file(a_path, std::ios::binary);
+			if (!file) {
+				return 0;
+			}
+			const std::string        text{ std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>() };
+			std::vector<std::string> warnings;
+			const size_t added = AuthoredSnowMath::ParseCityText(text, g_cityMeshes, a_through, warnings);
+			for (size_t i = 0; i < warnings.size() && i < 16; ++i) {
+				logger::warn("CitySnow: {} in {}", warnings[i], a_source);
+			}
+			if (warnings.size() > 16) {
+				logger::warn("CitySnow: {} more such lines in {}", warnings.size() - 16, a_source);
+			}
+			return added;
+		}
+
 		std::vector<std::filesystem::path> SortedFolders(const std::filesystem::path& a_root)
 		{
 			std::vector<std::filesystem::path> out;
@@ -430,6 +452,7 @@ namespace Surfaces
 		g_profiles.clear();
 		g_stampDefaults = StampDefaults{};
 		g_meshSnow = MeshSnow{};
+		g_cityMeshes.clear();
 		{
 			std::lock_guard lock(g_cacheLock);
 			g_cache.clear();
@@ -493,6 +516,34 @@ namespace Surfaces
 		BuildIndex(firstPatch);
 
 		applyStampDefaults();
+
+		{
+			size_t files = 0;
+			const auto readCity = [&files](const std::filesystem::path& a_folder, const std::string& a_source) {
+				const auto      file = a_folder / kCityFile;
+				std::error_code ec;
+				if (!std::filesystem::is_regular_file(file, ec)) {
+					return;
+				}
+				size_t       through = 0;
+				const size_t added = ParseCityFile(file, a_source, through);
+				++files;
+				logger::info("CitySnow: {} entr{} from {}{}", added, added == 1 ? "y" : "ies", a_source,
+					through ? std::format(", {} pressing through to the surface under the snow", through) : std::string{});
+			};
+			for (const auto& folder : SortedFolders(root)) {
+				if (Lowered(folder.filename().string()) != Lowered(kPatches)) {
+					readCity(folder, folder.filename().string());
+				}
+			}
+			for (const auto& folder : SortedFolders(root / kPatches)) {
+				readCity(folder, "Patches/" + folder.filename().string());
+			}
+			if (files > 0) {
+				logger::info("CitySnow: {} model{} take prints in city worldspaces, where nothing else deforms",
+					g_cityMeshes.size(), g_cityMeshes.size() == 1 ? "" : "s");
+			}
+		}
 
 		if (HasMeshProfile()) {
 			const auto r = MeshResponse();
@@ -570,9 +621,15 @@ namespace Surfaces
 		return r;
 	}
 
+	const AuthoredSnowMath::ModelList& CitySnowMeshes()
+	{
+		return g_cityMeshes;
+	}
+
 	void ReleaseProfiles()
 	{
 		g_profiles.clear();
+		g_cityMeshes.clear();
 		g_byTexture.clear();
 		g_byForm.clear();
 		std::lock_guard lock(g_cacheLock);
@@ -602,6 +659,7 @@ namespace Surfaces
 		for (const auto& folder : SortedFolders(root)) {
 			note(folder);
 			note(folder / kFile);
+			note(folder / kCityFile);
 		}
 
 		const auto patches = root / kPatches;
@@ -609,6 +667,7 @@ namespace Surfaces
 		for (const auto& folder : SortedFolders(patches)) {
 			note(folder);
 			note(folder / kFile);
+			note(folder / kCityFile);
 		}
 
 		return newest;

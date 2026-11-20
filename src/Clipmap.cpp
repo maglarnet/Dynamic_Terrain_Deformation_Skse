@@ -12,6 +12,7 @@
 #include "Clipmap.h"
 #include "AuthoredSnow.h"
 #include "AuthoredSnowMath.h"
+#include "TerrainActivity.h"
 
 #include "ClipmapUpdateCS.h"
 #include "ClipmapMetadata.h"
@@ -659,7 +660,8 @@ namespace Clipmap
 				return;
 			}
 
-			if (Clipmap::Stamp torch{}; HeatSources::ForActor(a_actor, torch)) {
+			const bool meshesOnly = TerrainActivity::MeshesOnly();
+			if (Clipmap::Stamp torch{}; !meshesOnly && HeatSources::ForActor(a_actor, torch)) {
 				a_out.push_back(torch);
 				if (a_out.size() >= kMaxStamps) {
 					return;
@@ -695,7 +697,7 @@ namespace Clipmap
 			float motionY = 0.0f;
 			TrackActorMotion(a_actor->GetFormID(), position, motionX, motionY);
 
-			if (SnowSparkle::Enabled() && !a_actor->IsDead()) {
+			if (!meshesOnly && SnowSparkle::Enabled() && !a_actor->IsDead()) {
 				RE::NiPoint3 velocity{};
 				a_actor->GetLinearVelocity(velocity);
 
@@ -727,7 +729,7 @@ namespace Clipmap
 					AuthoredSnow::Contact meshContact{};
 					const bool meshHit = AuthoredSnow::FindContact(centre.x, centre.y, centre.z - radius,
 						Settings::authoredMeshContactClearance, meshContact);
-					if (onMesh && !meshHit) { return false; }
+					if ((onMesh || meshesOnly) && !meshHit) { return false; }
 					if (!meshHit && clearance > 0.0f && tes) {
 						float landZ = 0.0f;
 						if (tes->GetLandHeight(centre, landZ) &&
@@ -798,7 +800,9 @@ namespace Clipmap
 								ground.type == Surfaces::Type::kSnow ? ground.response.rimScale : contactResponse.rimScale);
 						}
 						const float snowTop = onMesh && actorMesh.mesh == meshContact.mesh ? actorMesh.z : meshContact.z;
-						stamp.depth = AuthoredSnowMath::FloorDepth(stamp.depth, snowTop, feetZ);
+						if (!meshContact.through) {
+							stamp.depth = AuthoredSnowMath::FloorDepth(stamp.depth, snowTop, feetZ);
+						}
 						stamp.surface = MeshSnowSurface::Kind::kMesh;
 						stamp.z = meshContact.z;
 						stamp.slopeX = meshContact.gx;
@@ -841,13 +845,14 @@ namespace Clipmap
 
 			auto& actors = g_frameActors;
 			actors.clear();
-			MagicImpacts::Append(anchor, stamps);
+			const bool meshesOnly = TerrainActivity::MeshesOnly();
+			if (!meshesOnly) { MagicImpacts::Append(anchor, stamps); }
 			const float maxDistance = ActorStampRange::Resolve(Settings::enableExtendedActorRange,
 				Settings::actorStampDistance, kWorldSize, WorldSizeFor(LevelCount() - 1));
 			CollectActors(actors, anchor, maxDistance);
 			if (actors.empty()) {
 
-				ObjectStamps::Append(a_deltaSeconds, anchor, stamps);
+				if (!meshesOnly) { ObjectStamps::Append(a_deltaSeconds, anchor, stamps); }
 				return stamps;
 			}
 
@@ -876,7 +881,7 @@ namespace Clipmap
 				}
 			}
 
-			ObjectStamps::Append(a_deltaSeconds, anchor, stamps);
+			if (!meshesOnly) { ObjectStamps::Append(a_deltaSeconds, anchor, stamps); }
 
 			actors.clear();
 			return stamps;
@@ -920,7 +925,11 @@ namespace Clipmap
 		g_cacheHits = g_cacheBuilds = g_collisionReads = 0;
 		g_actorClock = ActorCollisionCachePolicy::Advance(g_actorClock, a_deltaSeconds);
 		AuthoredSnow::BeginGather(a_deltaSeconds);
-		GatherStamps(a_deltaSeconds);
+		if (TerrainActivity::MeshesOnly() && !AuthoredSnow::Held()) {
+			g_frameStamps.clear();
+		} else {
+			GatherStamps(a_deltaSeconds);
+		}
 		ActorSnowHeight::EndFrame();
 		for (auto it = g_actorCollisions.begin(); it != g_actorCollisions.end();) {
 			it = it->second.seen != g_actorFrame ? g_actorCollisions.erase(it) : std::next(it);

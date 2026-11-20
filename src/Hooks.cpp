@@ -657,7 +657,8 @@ namespace Hooks
 
 				func(a_shader, a_pass, a_flags);
 
-				if (!TerrainActivity::Active()) { return; }
+				const bool meshesOnly = !TerrainActivity::Active() && TerrainActivity::MeshesOnly();
+				if (!TerrainActivity::Active() && !meshesOnly) { return; }
 
 				Observe("Lighting", a_pass);
 
@@ -671,6 +672,7 @@ namespace Hooks
 
 				const bool authoredCandidate = AuthoredSnowCandidate(a_pass);
 				if (authoredCandidate && (!globals::Ready() || !Settings::useClipmap || !Clipmap::Ready() || !AuthoredSnow::NeedsDraw(a_pass->geometry))) { return; }
+				if (meshesOnly && !authoredCandidate) { return; }
 				const bool bloodCandidate = a_pass && BloodDecals::MayContain(a_pass->geometry);
 				if (!authoredCandidate && !Settings::enableStaticProbe && !BloodRoutingGate::Relevant(false, NearLandscape(a_pass), bloodCandidate)) { return; }
 
@@ -750,7 +752,8 @@ namespace Hooks
 			{
 				func(a_shader, a_pass, a_flags);
 
-				if (!TerrainActivity::Active()) { return; }
+				const bool meshesOnly = !TerrainActivity::Active() && TerrainActivity::MeshesOnly();
+				if (!TerrainActivity::Active() && !meshesOnly) { return; }
 
 				Observe("Utility", a_pass);
 
@@ -760,6 +763,7 @@ namespace Hooks
 
 				const bool authoredCandidate = AuthoredSnowCandidate(a_pass);
 				if (authoredCandidate && (!globals::Ready() || !Settings::useClipmap || !Clipmap::Ready() || !AuthoredSnow::NeedsDraw(a_pass->geometry))) { return; }
+				if (meshesOnly && !authoredCandidate) { return; }
 				const bool bloodCandidate = a_pass && BloodDecals::MayContain(a_pass->geometry);
 				const bool probeCandidate = Settings::enableStaticProbe && Settings::staticProbeOffset != 0.0f;
 				if (!authoredCandidate && !probeCandidate && !BloodRoutingGate::Relevant(false, NearLandscape(a_pass), bloodCandidate)) { return; }
@@ -879,11 +883,21 @@ namespace Hooks
 			const bool loaded = player && cell && player->Is3DLoaded();
 			const bool interior = cell && cell->IsInteriorCell();
 			const bool reset = policy.Update(loaded && Settings::enableTessellation, interior, city, worldID);
-			if (reset) {
+			const bool meshesOnly = loaded && Settings::enableTessellation && !interior && city && worldID != 0 &&
+				Settings::enableAuthoredMeshDeformation && Settings::useClipmap &&
+				(!Surfaces::CitySnowMeshes().empty() || Settings::logCitySnowCandidates);
+			static bool lastMeshesOnly = false;
+			static RE::FormID lastMeshWorld = 0;
+			const bool meshReset = meshesOnly != lastMeshesOnly || (meshesOnly && worldID != lastMeshWorld);
+			lastMeshesOnly = meshesOnly;
+			lastMeshWorld = worldID;
+			if (reset || meshReset) {
 				logger::info("Terrain activity: {} | world={:08X} cell={:08X} cityWorld={} interior={} loaded3D={} tess={}",
-					policy.active ? "active" : "idle", worldID, cell ? cell->GetFormID() : 0,
-					city, interior, loaded, Settings::enableTessellation);
+					policy.active ? "active" : meshesOnly ? "city, CitySnow.ini meshes only" : "idle", worldID,
+					cell ? cell->GetFormID() : 0, city, interior, loaded, Settings::enableTessellation);
 				TerrainActivity::active.store(false, std::memory_order_relaxed);
+				TerrainActivity::meshesOnly.store(false, std::memory_order_relaxed);
+				if (meshReset) { AuthoredSnow::Reset(); }
 				Clipmap::ForgetWindow();
 				ObjectStamps::Forget();
 				MagicImpacts::Reset();
@@ -896,6 +910,7 @@ namespace Hooks
 				Profiler::Reset();
 			}
 			TerrainActivity::active.store(policy.active, std::memory_order_relaxed);
+			TerrainActivity::meshesOnly.store(meshesOnly, std::memory_order_relaxed);
 			return policy.active;
 		}
 
@@ -914,8 +929,9 @@ namespace Hooks
 				static bool wasEligible = false;
 				const auto worldID = world ? world->GetFormID() : 0;
 				if (worldID != lastWorld) { city = TerrainActivity::IsCityWorld(world); lastWorld = worldID; }
+				const bool meshesOnly = city && TerrainActivity::MeshesOnly();
 				if (!Settings::enableTessellation || !player ||
-					!player->Is3DLoaded() || !cell || cell->IsInteriorCell() || !world || city) {
+					!player->Is3DLoaded() || !cell || cell->IsInteriorCell() || !world || (city && !meshesOnly)) {
 					ActorSnowHeight::Clear();
 					if (wasEligible) { Clipmap::InvalidateGather(); }
 					wasEligible = false;
@@ -923,12 +939,18 @@ namespace Hooks
 				}
 				wasEligible = true;
 				Weather::Update();
-				Shelter::UpdateCPU();
+				if (!meshesOnly) { Shelter::UpdateCPU(); }
 				const float raw = globals::game::deltaTime ? *globals::game::deltaTime : 0.0f;
 				const bool paused = globals::game::ui && globals::game::ui->GameIsPaused();
 				if (!Settings::useClipmap || !Settings::enableSnowHeightVariable) { ActorSnowHeight::Clear(); }
 				if (Settings::useClipmap) {
-					Clipmap::GatherFrame(!paused && raw > 0.0f && raw < 0.25f ? raw : 0.0f);
+					const float step = !paused && raw > 0.0f && raw < 0.25f ? raw : 0.0f;
+					if (meshesOnly && !AuthoredSnow::Listed()) {
+						ActorSnowHeight::Clear();
+						AuthoredSnow::BeginGather(step);
+					} else {
+						Clipmap::GatherFrame(step);
+					}
 				}
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
@@ -951,6 +973,11 @@ namespace Hooks
 				}
 
 				if (!RefreshTerrainActivity()) {
+					if (TerrainActivity::MeshesOnly() && AuthoredSnow::Listed()) {
+						Profiler::Frame(dt);
+						Tessellation::PrepareFrame();
+						Clipmap::Update(step);
+					}
 					guard.unlock();
 					func(a1, a2);
 					return;

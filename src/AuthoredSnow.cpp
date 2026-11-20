@@ -16,6 +16,8 @@
 #include "Globals.h"
 #include "PCH.h"
 #include "Profiler.h"
+#include "SurfaceProfiles.h"
+#include "TerrainActivity.h"
 
 namespace AuthoredSnow {
     namespace {
@@ -37,6 +39,7 @@ namespace AuthoredSnow {
             Clock::time_point lastMoveAt{};
             uint32_t smallMoves{};
             bool moving{};
+            bool through{};
         };
         struct Timed {
             int64_t started = Profiler::Ticks();
@@ -44,6 +47,18 @@ namespace AuthoredSnow {
         };
         std::mutex g_lock;
         std::unordered_map<const void*, Mesh> g_meshes;
+        std::mutex g_listLock;
+        struct Listing {
+            const void* renderer{};
+            bool through{};
+        };
+        std::unordered_map<const void*, Listing> g_listed;
+        std::atomic<bool> g_anyListed{};
+        std::unordered_map<const void*, const AuthoredSnowMath::ListedModel*> g_baseModels;
+        size_t g_cityReported = SIZE_MAX;
+        uint32_t g_cityLogged{};
+        std::unordered_set<const void*> g_candidateSeen;
+        uint32_t g_candidatesLogged{};
         uint64_t g_nextID = 1;
         float g_scanCountdown{};
         uint32_t g_readbacks{};
@@ -358,6 +373,10 @@ namespace AuthoredSnow {
             m.capturedAt = now;
             m.lastMoveAt = lastMoveAt;
             m.smallMoves = smallMoves;
+            if (TerrainActivity::MeshesOnly()) {
+                std::lock_guard listGuard(g_listLock);
+                if (const auto listed = g_listed.find(geometry); listed != g_listed.end()) m.through = listed->second.through;
+            }
             m.faces.reserve(counts.triangleCount);
             m.minX = m.minY = m.minZ = std::numeric_limits<float>::infinity();
             m.maxX = m.maxY = m.maxZ = -std::numeric_limits<float>::infinity();
@@ -409,8 +428,21 @@ namespace AuthoredSnow {
         if (!Settings::enableAuthoredMeshDeformation || !geometry) return false;
         auto& runtime = geometry->GetGeometryRuntimeData();
         if (runtime.skinInstance) return false;
+        if (TerrainActivity::MeshesOnly()) {
+            if (!g_anyListed.load(std::memory_order_relaxed)) return false;
+            std::lock_guard guard(g_listLock);
+            const auto listed = g_listed.find(geometry);
+            return listed != g_listed.end() && listed->second.renderer == runtime.rendererData;
+        }
         return AuthoredSnowMath::Matches(std::string_view(geometry->name)) || SnowTexture(geometry);
     }
+
+    bool Held() {
+        std::lock_guard guard(g_lock);
+        return !g_meshes.empty();
+    }
+
+    bool Listed() { return g_anyListed.load(std::memory_order_relaxed); }
 
     void BeginGather(float dt) {
         Timed timed;
@@ -436,6 +468,99 @@ namespace AuthoredSnow {
         if (!tes || !player) return;
         const auto started = Clock::now();
         size_t visited = 0, captured = 0, references = 0;
+        const float range = Clipmap::WorldSizeFor(Clipmap::LevelCount() - 1) * 0.5f;
+        if (TerrainActivity::MeshesOnly()) {
+            const auto& lists = Surfaces::CitySnowMeshes();
+            std::vector<std::pair<RE::BSGeometry*, RE::ObjectRefHandle>> found;
+            std::unordered_map<const void*, Listing> listed;
+            auto collect = [&](auto&& self, RE::NiAVObject* obj, RE::ObjectRefHandle owner,
+                               const AuthoredSnowMath::ListedModel& model, uint32_t depth) -> void {
+                if (!obj || depth > 32 || ++visited > 32768) return;
+                if (auto* geometry = obj->AsGeometry()) {
+                    auto& runtime = geometry->GetGeometryRuntimeData();
+                    if (!runtime.skinInstance && runtime.rendererData &&
+                        AuthoredSnowMath::Selects(model, std::string_view(geometry->name),
+                                                  model.texture && SnowTexture(geometry))) {
+                        listed[geometry] = {runtime.rendererData, model.through};
+                        found.emplace_back(geometry, owner);
+                    }
+                }
+                if (auto* node = obj->AsNode())
+                    for (const auto& child : node->GetChildren()) self(self, child.get(), owner, model, depth + 1);
+            };
+            if (!lists.empty() || Settings::logCitySnowCandidates) {
+                tes->ForEachReferenceInRange(player, range, [&](RE::TESObjectREFR* ref) {
+                    if (visited >= 32768) return RE::BSContainer::ForEachResult::kStop;
+                    if (!ref || ref->IsDisabled() || ref->IsMarkedForDeletion() || ref->As<RE::Actor>())
+                        return RE::BSContainer::ForEachResult::kContinue;
+                    auto* base = ref->GetBaseObject();
+                    if (!base) return RE::BSContainer::ForEachResult::kContinue;
+                    if (g_baseModels.size() > 65536) g_baseModels.clear();
+                    auto [cached, fresh] = g_baseModels.try_emplace(base, nullptr);
+                    if (fresh) {
+                        auto* model = base->As<RE::TESModel>();
+                        const char* path = model ? model->GetModel() : nullptr;
+                        if (path && *path)
+                            if (const auto entry = lists.find(AuthoredSnowMath::ModelKey(path)); entry != lists.end())
+                                cached->second = &entry->second;
+                    }
+                    if (cached->second) {
+                        ++references;
+                        collect(collect, ref->Get3D(), ref->GetHandle(), *cached->second, 0);
+                    } else if (Settings::logCitySnowCandidates && g_candidatesLogged < 64 && ref->Get3D() &&
+                               g_candidateSeen.insert(base).second) {
+                        std::string shapes;
+                        size_t shown = 0;
+                        auto look = [&](auto&& self, RE::NiAVObject* obj, uint32_t depth) -> void {
+                            if (!obj || depth > 32 || shown >= 8) return;
+                            if (auto* geometry = obj->AsGeometry();
+                                geometry && !geometry->GetGeometryRuntimeData().skinInstance && SnowTexture(geometry))
+                                shapes += (shown++ ? ", " : "") + std::string(geometry->name.c_str());
+                            if (auto* node = obj->AsNode())
+                                for (const auto& child : node->GetChildren()) self(self, child.get(), depth + 1);
+                        };
+                        look(look, ref->Get3D(), 0);
+                        auto* model = base->As<RE::TESModel>();
+                        const char* path = model ? model->GetModel() : nullptr;
+                        if (shown && path && *path) {
+                            ++g_candidatesLogged;
+                            logger::info("CitySnow: not listed, snow-textured: {} ({})", AuthoredSnowMath::ModelKey(path),
+                                         shapes);
+                        }
+                    }
+                    return RE::BSContainer::ForEachResult::kContinue;
+                });
+            }
+            {
+                std::lock_guard listGuard(g_listLock);
+                g_listed.swap(listed);
+                g_anyListed.store(!g_listed.empty(), std::memory_order_relaxed);
+            }
+            for (const auto& [geometry, owner] : found) {
+                if (captured < 16 && !g_meshes.contains(geometry)) {
+                    auto* data = geometry->GetGeometryRuntimeData().rendererData;
+                    if (data && data->rawVertexData && data->rawIndexData) {
+                        ++captured;
+                        Capture(geometry, false, owner);
+                    }
+                } else if (g_meshes.contains(geometry))
+                    Capture(geometry, false, owner);
+            }
+            std::erase_if(g_meshes, [](const auto& item) { return !g_listed.contains(item.first); });
+            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+            if (ms > 4.0 && g_slowLogged < 12) {
+                ++g_slowLogged;
+                logger::info("CitySnow: the scan took {:.1f} ms ({} listed references, {} nodes, {} shapes, {} held)",
+                             ms, references, visited, g_listed.size(), g_meshes.size());
+            }
+            if (references != g_cityReported && g_cityLogged < 24) {
+                ++g_cityLogged;
+                g_cityReported = references;
+                logger::info("CitySnow: {} listed reference{} in range, {} shape{} taking prints",
+                             references, references == 1 ? "" : "s", g_listed.size(), g_listed.size() == 1 ? "" : "s");
+            }
+            return;
+        }
         auto visit = [&](auto&& self, RE::NiAVObject* obj, RE::ObjectRefHandle owner, uint32_t depth) -> void {
             if (!obj || depth > 32 || ++visited > 32768) return;
             if (auto* geometry = obj->AsGeometry(); geometry && Matches(geometry)) {
@@ -452,7 +577,7 @@ namespace AuthoredSnow {
                 for (const auto& child : node->GetChildren()) self(self, child.get(), owner, depth + 1);
         };
         tes->ForEachReferenceInRange(
-            player, Clipmap::WorldSizeFor(Clipmap::LevelCount() - 1) * 0.5f, [&](RE::TESObjectREFR* ref) {
+            player, range, [&](RE::TESObjectREFR* ref) {
                 if (visited >= 32768) return RE::BSContainer::ForEachResult::kStop;
                 if (ref && !ref->IsDisabled() && !ref->IsMarkedForDeletion() && !ref->As<RE::Actor>()) {
                     ++references;
@@ -491,7 +616,7 @@ namespace AuthoredSnow {
                 const float distance = std::abs(bottom - z);
                 if (distance < nearest) {
                     nearest = distance;
-                    result = {m.id, z, gx, gy};
+                    result = {m.id, z, gx, gy, m.through};
                     found = true;
                 }
             });
@@ -569,6 +694,16 @@ namespace AuthoredSnow {
     void Reset() {
         std::lock_guard guard(g_lock);
         g_meshes.clear();
+        {
+            std::lock_guard listGuard(g_listLock);
+            g_listed.clear();
+            g_anyListed.store(false, std::memory_order_relaxed);
+        }
+        g_baseModels.clear();
+        g_cityReported = SIZE_MAX;
+        g_cityLogged = 0;
+        g_candidateSeen.clear();
+        g_candidatesLogged = 0;
         g_retry.clear();
         g_scanCountdown = 0;
         g_skipsLogged = 0;

@@ -4,7 +4,10 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <format>
+#include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 namespace AuthoredSnowMath {
     struct Point {
@@ -35,6 +38,117 @@ namespace AuthoredSnowMath {
             if (end == std::string_view::npos) break;
             pieces.remove_prefix(end + 1);
         }
+        return false;
+    }
+    struct ListedModel {
+        bool all{};
+        bool texture{};
+        std::vector<std::string> shapes;
+        bool through{};
+    };
+    using ModelList = std::unordered_map<std::string, ListedModel>;
+    inline std::string Folded(std::string_view text) {
+        while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.remove_prefix(1);
+        while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r')) text.remove_suffix(1);
+        std::string out(text);
+        for (auto& c : out) c = c == '/' ? '\\' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return out;
+    }
+    inline std::string ModelKey(std::string_view path) {
+        auto key = Folded(path);
+        for (std::string_view prefix : {"data\\", "meshes\\"})
+            if (key.rfind(prefix, 0) == 0) key.erase(0, prefix.size());
+        return key;
+    }
+    inline size_t AddListed(std::string_view value, ModelList& out, bool through = false) {
+        size_t added = 0;
+        while (!value.empty()) {
+            const auto end = value.find(',');
+            const auto item = value.substr(0, end);
+            const auto colon = item.find(':');
+            const auto key = ModelKey(item.substr(0, colon));
+            if (!key.empty()) {
+                auto& model = out[key];
+                model.through = model.through || through;
+                if (colon == std::string_view::npos) {
+                    model.texture = true;
+                } else {
+                    auto names = item.substr(colon + 1);
+                    while (!names.empty()) {
+                        const auto bar = names.find('|');
+                        const auto name = Folded(names.substr(0, bar));
+                        if (name == "*")
+                            model.all = true;
+                        else if (!name.empty() && std::find(model.shapes.begin(), model.shapes.end(), name) == model.shapes.end())
+                            model.shapes.push_back(name);
+                        if (bar == std::string_view::npos) break;
+                        names.remove_prefix(bar + 1);
+                    }
+                    if (!model.all && model.shapes.empty()) model.texture = true;
+                }
+                ++added;
+            }
+            if (end == std::string_view::npos) break;
+            value.remove_prefix(end + 1);
+        }
+        return added;
+    }
+    inline size_t ParseCityText(std::string_view text, ModelList& out, size_t& through,
+                                std::vector<std::string>& warnings) {
+        const auto trim = [](std::string_view s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+            while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) s.remove_suffix(1);
+            return s;
+        };
+        if (text.starts_with("\xEF\xBB\xBF")) text.remove_prefix(3);
+        size_t added = 0;
+        bool pressThrough = false, inList = false;
+        const auto add = [&](std::string_view entries) {
+            const size_t n = AddListed(entries, out, pressThrough);
+            added += n;
+            through += pressThrough ? n : 0;
+        };
+        while (!text.empty()) {
+            const auto end = text.find('\n');
+            auto line = text.substr(0, end);
+            text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
+            if (const auto comment = line.find_first_of(";#"); comment != std::string_view::npos)
+                line = line.substr(0, comment);
+            line = trim(line);
+            if (line.empty()) continue;
+            if (line.front() == '[') {
+                inList = pressThrough = false;
+                continue;
+            }
+            const auto equals = line.find('=');
+            if (equals == std::string_view::npos) {
+                if (inList)
+                    add(line);
+                else
+                    warnings.push_back(std::format("'{}' is not under a Meshes= line", line));
+                continue;
+            }
+            const auto key = Folded(line.substr(0, equals));
+            const auto value = trim(line.substr(equals + 1));
+            inList = key == "meshes" || key == "mesh";
+            if (inList) {
+                add(value);
+            } else if (key == "pressthrough") {
+                const auto v = Folded(value);
+                pressThrough = v == "1" || v == "true" || v == "yes";
+            } else {
+                warnings.push_back(std::format("unknown key '{}' - it takes Meshes and PressThrough", key));
+            }
+        }
+        return added;
+    }
+    inline bool Selects(const ListedModel& model, std::string_view shape, bool snowTexture) {
+        if (model.all || (model.texture && snowTexture)) return true;
+        const auto name = Folded(shape);
+        const auto colon = name.rfind(':');
+        for (const auto& wanted : model.shapes)
+            if (name == wanted || (colon != std::string::npos && std::string_view(name).substr(0, colon) == wanted))
+                return true;
         return false;
     }
     inline bool Height(const Triangle& t, float x, float y, float& z, float& gx, float& gy) {

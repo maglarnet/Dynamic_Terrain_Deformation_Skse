@@ -10,6 +10,7 @@
 #include "Settings.h"
 #include "SnowSurface.h"
 #include "SurfaceProfiles.h"
+#include "TerrainActivity.h"
 
 namespace ActorSnowHeight {
     namespace {
@@ -56,6 +57,10 @@ namespace ActorSnowHeight {
             result.snow = true;
             result.z = mesh.z;
         } else {
+            if (TerrainActivity::MeshesOnly()) {
+                result.reason = "city-land";
+                return result;
+            }
             if (Surfaces::GroundAt(pos).type != Surfaces::Type::kSnow) {
                 result.reason = "non-snow-material";
                 return result;

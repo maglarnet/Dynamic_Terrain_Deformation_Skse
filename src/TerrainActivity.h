@@ -7,4 +7,7 @@ namespace TerrainActivity
 {
 	inline std::atomic<bool> active{ false };
 	inline bool Active() { return active.load(std::memory_order_relaxed); }
+
+	inline std::atomic<bool> meshesOnly{ false };
+	inline bool MeshesOnly() { return meshesOnly.load(std::memory_order_relaxed); }
 }

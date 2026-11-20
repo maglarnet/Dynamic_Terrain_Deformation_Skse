@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "AuthoredSnowMath.h"
 #include "SurfaceTypes.h"
 
 #include <cstddef>
@@ -38,4 +39,6 @@ namespace Surfaces
 
 	bool     HasMeshProfile();
 	Response MeshResponse();
+
+	const AuthoredSnowMath::ModelList& CitySnowMeshes();
 }

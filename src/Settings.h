@@ -97,6 +97,7 @@ namespace Settings
 	inline float authoredMeshContactClearance{ 16.0f };
 	inline std::string meshSnowTextures{ "landscape\\snow0" };
 	inline float meshSnowHeightBand{ 64.0f };
+	inline bool  logCitySnowCandidates{ false };
 
 	inline bool enableStaticProbe{ false };
 

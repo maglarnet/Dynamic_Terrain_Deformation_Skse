@@ -89,6 +89,76 @@ int main() {
         Require(FloorDepth(NAN, 104, 100) == 0.0f && FloorDepth(4, 104, INFINITY) == 0.0f, "invalid input");
         std::puts("PASS mesh prints stop at the floor the actor stands on");
 
+        Require(ModelKey(" Meshes/Architecture\\Windhelm\\WHPrisonWall01.NIF ") ==
+                    "architecture\\windhelm\\whprisonwall01.nif" &&
+                    ModelKey("Data\\Meshes\\a\\b.nif") == "a\\b.nif" && ModelKey("x.nif") == "x.nif",
+                "model keys: case, slashes, Data and Meshes prefixes");
+        ModelList list;
+        Require(AddListed("nsutr\\walk.nif, architecture/windhelm/wall.nif:Snow|SnowWalkway, rocks\\drift.nif:*, ,"
+                          " empty.nif:",
+                          list) == 4,
+                "four entries read, blanks skipped");
+        const auto& walk = list["nsutr\\walk.nif"];
+        const auto& wall = list["architecture\\windhelm\\wall.nif"];
+        const auto& drift = list["rocks\\drift.nif"];
+        Require(walk.texture && !walk.all && walk.shapes.empty(), "a bare path takes its snow-textured shapes");
+        Require(!wall.texture && wall.shapes.size() == 2 && wall.shapes[1] == "snowwalkway", "named shapes");
+        Require(drift.all, "* takes every shape");
+        Require(list["empty.nif"].texture, "an empty name list falls back to the texture rule");
+        Require(Selects(walk, "Anything", true) && !Selects(walk, "Snow", false), "texture rule");
+        Require(Selects(wall, "SNOW", false) && Selects(wall, "SnowWalkway:3", false) && !Selects(wall, "Wall", true) &&
+                    !Selects(wall, "Snowy", false),
+                "names: any case, exporter suffix, no partial match, texture ignored");
+        Require(Selects(drift, "Rock", false), "every shape");
+        AddListed("rocks\\drift.nif:Extra, nsutr\\walk.nif:Snow", list);
+        Require(list.size() == 4 && drift.all && walk.texture && walk.shapes.size() == 1, "later files add to an entry");
+        Require(!walk.through && !drift.through, "the floor holds unless a list says PressThrough");
+        Require(AddListed("nsutr\\walk.nif, streets\\skin.nif", list, true) == 2 && walk.through &&
+                    list["streets\\skin.nif"].through && list["streets\\skin.nif"].texture,
+                "PressThrough marks its entries");
+        AddListed("nsutr\\walk.nif", list);
+        Require(walk.through && !drift.through, "a model listed once with PressThrough keeps it");
+        std::puts("PASS CitySnow.ini entries: paths, shape names, *, texture rule, merging, PressThrough");
+
+        ModelList city;
+        size_t through = 0;
+        std::vector<std::string> warnings;
+        const size_t read = ParseCityText("\xEF\xBB\xBF; Windhelm\r\n"
+                                          "PressThrough = 1\r\n"
+                                          "Meshes=\r\n"
+                                          "example01.nif,\r\n"
+                                          "example02.nif,\r\n"
+                                          "\r\n"
+                                          "; the third\r\n"
+                                          "example03.nif:snow1,\r\n"
+                                          "example01.nif:snow1|snow2|snow3\r\n"
+                                          "PressThrough = 0\r\n"
+                                          "Meshes=\r\n"
+                                          "example04.nif,\r\n"
+                                          "example05.nif, ; a note\r\n"
+                                          "example06.nif:snow1,\r\n"
+                                          "example071.nif:snow1|snow2|snow3\r\n"
+                                          "[Old style]\r\n"
+                                          "stray.nif\r\n"
+                                          "Meshes = one.nif, two.nif:Snow\n"
+                                          "Colour = red\r\n"
+                                          "after.nif",
+                                          city, through, warnings);
+        Require(read == 10 && through == 4 && city.size() == 9, "ten entries, four pressing through, nine models");
+        const auto& first = city["example01.nif"];
+        Require(first.through && first.texture && first.shapes.size() == 3 && first.shapes[2] == "snow3",
+                "a model listed twice in one list merges");
+        Require(city["example03.nif"].through && !city["example03.nif"].texture &&
+                    city["example03.nif"].shapes.size() == 1,
+                "a named shape below Meshes=");
+        Require(!city["example04.nif"].through && !city["example071.nif"].through && city["example071.nif"].shapes.size() == 3,
+                "PressThrough = 0 holds for the next list");
+        Require(!city["one.nif"].through && city["two.nif"].shapes.size() == 1 && !city.contains("stray.nif") &&
+                    !city.contains("after.nif"),
+                "a [section] starts over; the one-line form still reads");
+        Require(warnings.size() == 3, "warned: a line under no list, an unknown key, a line after it");
+        std::puts("PASS CitySnow.ini file: Meshes= lists over several lines, PressThrough order, comments, old form");
+
         std::vector<Triangle> faces;
         for (int y = 0; y < 40; ++y)
             for (int x = 0; x < 40; ++x) {

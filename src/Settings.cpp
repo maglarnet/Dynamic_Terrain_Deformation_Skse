@@ -246,6 +246,8 @@ namespace Settings
 			meshSnowTextures = Trim(value);
 		} else if (key == "MeshSnowHeightBand") {
 			meshSnowHeightBand = Clamped(key, AsFloat(key, value, 64.0f), 8.0f, 120.0f);
+		} else if (key == "LogCitySnowCandidates") {
+			logCitySnowCandidates = AsBool(value);
 		} else if (key == "EnableStaticProbe") {
 			enableStaticProbe = AsBool(value);
 		} else if (key == "StaticProbeOffset") {
