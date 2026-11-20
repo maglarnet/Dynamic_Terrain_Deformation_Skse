@@ -31,6 +31,7 @@ target_sources(${PROJECT_NAME} PRIVATE
     src/SnowCoverage.cpp
     src/SnowSparkle.cpp
     src/SnowSurface.cpp
+    src/SnowView.cpp
     src/SurfaceProfiles.cpp
     src/Settings.cpp
     src/SurfaceTypes.cpp
